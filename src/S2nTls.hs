@@ -192,9 +192,13 @@ data S2nTls = S2nTls
   , getServerName :: forall m. (MonadIO m) => Connection -> m (Maybe String)
   -- ^ Get the server name from the connection.
   , negotiate :: forall m. (MonadIO m) => Connection -> m (Either Blocked ())
-  -- ^ Perform the TLS handshake.
+  -- ^ Perform the TLS handshake (non-blocking).
+  , blockingNegotiate :: forall m. (MonadIO m) => Connection -> m ()
+  -- ^ Perform the TLS handshake (blocking).
   , send :: forall m. (MonadIO m) => Connection -> ByteString -> m (Either Blocked Int)
-  -- ^ Send data over the TLS connection.
+  -- ^ Send data over the TLS connection (non-blocking).
+  , blockingSend :: forall m. (MonadIO m) => Connection -> ByteString -> m Int
+  -- ^ Send data over the TLS connection (blocking).
   , recv ::
       forall m.
       (MonadIO m) =>
@@ -202,7 +206,15 @@ data S2nTls = S2nTls
       -- | Maximum bytes to receive
       Int ->
       m (Either Blocked ByteString)
-  -- ^ Receive data from the TLS connection.
+  -- ^ Receive data from the TLS connection (non-blocking).
+  , blockingRecv ::
+      forall m.
+      (MonadIO m) =>
+      Connection ->
+      -- | Maximum bytes to receive
+      Int ->
+      m ByteString
+  -- ^ Receive data from the TLS connection (blocking).
   , shutdown :: forall m. (MonadIO m) => Connection -> m (Either Blocked ())
   -- ^ Shutdown the TLS connection (bidirectional).
   , shutdownSend :: forall m. (MonadIO m) => Connection -> m (Either Blocked ())
@@ -273,8 +285,11 @@ mkS2nTls sys =
     , setServerName = Conn.setServerName sys
     , getServerName = Conn.getServerName sys
     , negotiate = Conn.negotiate sys
+    , blockingNegotiate = Conn.blockingNegotiate sys
     , send = Conn.send sys
+    , blockingSend = Conn.blockingSend sys
     , recv = Conn.recv sys
+    , blockingRecv = Conn.blockingRecv sys
     , shutdown = Conn.shutdown sys
     , shutdownSend = Conn.shutdownSend sys
     , getApplicationProtocol = Conn.getApplicationProtocol sys

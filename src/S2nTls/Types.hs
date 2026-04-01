@@ -13,7 +13,7 @@
 module S2nTls.Types
     ( -- * Safe Pointer Types
       Config
-    , Connection
+    , Connection (..)
     , CertChainAndKey
 
       -- * Re-exported Enumerations
@@ -36,6 +36,7 @@ module S2nTls.Types
     , pattern TLS13
     ) where
 
+import Data.IORef (IORef)
 import Foreign.C.Types (CInt)
 import Foreign.ForeignPtr (ForeignPtr)
 import S2nTls.Error (Blocked (..))
@@ -58,7 +59,15 @@ type Config = ForeignPtr S2nConfig
 
 -- | A managed TLS connection.
 -- Resources are automatically freed when the 'Connection' is garbage collected.
-type Connection = ForeignPtr S2nConnection
+-- The connection also tracks file descriptors for blocking I/O support.
+data Connection = Connection
+    { connPtr :: !(ForeignPtr S2nConnection)
+    -- ^ The underlying s2n connection pointer
+    , connReadFd :: !(IORef (Maybe CInt))
+    -- ^ Read file descriptor (set via 'setReadFd' or 'setFd')
+    , connWriteFd :: !(IORef (Maybe CInt))
+    -- ^ Write file descriptor (set via 'setWriteFd' or 'setFd')
+    }
 
 -- | A managed certificate chain and key pair.
 -- Resources are automatically freed when garbage collected.
