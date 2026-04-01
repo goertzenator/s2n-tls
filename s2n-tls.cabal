@@ -1,0 +1,34 @@
+cabal-version: 3.0
+name:          s2n-tls
+version:       0.1.0.0
+synopsis:      High-level Haskell bindings to s2n-tls
+description:
+  Safe, high-level Haskell bindings to the s2n-tls library,
+  providing memory-safe ForeignPtr wrappers and Haskell-idiomatic
+  error handling.
+
+license:       BSD-3-Clause
+license-file:  LICENSE
+author:        Your Name
+maintainer:    your.email@example.com
+category:      Network, Cryptography
+build-type:    Simple
+extra-doc-files: CHANGELOG.md
+
+library
+  exposed-modules:
+    S2nTls
+    S2nTls.Error
+    S2nTls.Types
+    S2nTls.Config
+    S2nTls.Connection
+
+  build-depends:
+    , base        >= 4.14 && < 5
+    , bytestring  >= 0.10 && < 0.13
+    , unliftio    >= 0.2 && < 0.3
+    , s2n-tls-sys
+
+  hs-source-dirs:   src
+  default-language: GHC2021
+  ghc-options:      -Wall

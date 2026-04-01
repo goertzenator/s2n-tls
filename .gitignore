@@ -1,0 +1,50 @@
+# Cabal build artifacts
+dist/
+dist-newstyle/
+cabal.project.local
+cabal.project.local~
+.cabal-sandbox/
+cabal.sandbox.config
+
+# Stack build artifacts
+.stack-work/
+stack.yaml.lock
+
+# GHC artifacts
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+*.chi
+*.chs.h
+
+# Haskell profiling
+*.hp
+*.prof
+*.aux
+*.eventlog
+
+# Editor files
+*~
+*.swp
+*.swo
+.#*
+\#*#
+.dir-locals.el
+TAGS
+tags
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.vim/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Package artifacts
+*.tar.gz
+
+lsplog.txt
