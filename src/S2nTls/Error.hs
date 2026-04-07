@@ -1,36 +1,33 @@
--- |
--- Module      : S2nTls.Error
--- Copyright   : (c) 2025
--- License     : BSD-3-Clause
--- Maintainer  : your.email@example.com
--- Stability   : experimental
--- Portability : non-portable (requires s2n-tls C library)
---
 {-# LANGUAGE PatternSynonyms #-}
+
+-- \|
+-- Module      : S2nTls.Error
+-- Description : Error types and exception handling for s2n-tls
+-- License     : BSD-3-Clause
+--
+-- This module provides Haskell-idiomatic error handling for s2n-tls operations.
+-- Truly exceptional errors (internal errors, usage errors, protocol violations)
+-- are thrown as exceptions. Expected "errors" like blocking on I/O are returned
+-- via 'Either'.
 
 {- |
 Module      : S2nTls.Error
-Description : Error types and exception handling for s2n-tls
+Copyright   : (c) 2026
 License     : BSD-3-Clause
-
-This module provides Haskell-idiomatic error handling for s2n-tls operations.
-Truly exceptional errors (internal errors, usage errors, protocol violations)
-are thrown as exceptions. Expected "errors" like blocking on I/O are returned
-via 'Either'.
+Maintainer  : daniel.goertzen@gmail.com
 -}
 module S2nTls.Error (
   -- * Exceptions
   S2nError (..),
   S2nErrorType (..),
-  throwS2nError,
 
   -- * Blocking Status
   Blocked (..),
 
   -- * Internal Utilities
-  checkReturn,
+  fromSysError,
+  fromSysEither,
   checkReturnWithBlocked,
-  getLastError,
 ) where
 
 import Foreign.C.Types (CInt (..))
@@ -41,7 +38,6 @@ import S2nTls.Sys.Types (
   pattern S2N_BLOCKED_ON_EARLY_DATA,
   pattern S2N_BLOCKED_ON_READ,
   pattern S2N_BLOCKED_ON_WRITE,
-  pattern S2N_CALLBACK_BLOCKED,
   pattern S2N_ERR_T_ALERT,
   pattern S2N_ERR_T_BLOCKED,
   pattern S2N_ERR_T_CLOSED,
@@ -50,9 +46,7 @@ import S2nTls.Sys.Types (
   pattern S2N_ERR_T_OK,
   pattern S2N_ERR_T_PROTO,
   pattern S2N_ERR_T_USAGE,
-  pattern S2N_FAILURE,
   pattern S2N_NOT_BLOCKED,
-  pattern S2N_SUCCESS,
  )
 import S2nTls.Sys.Types qualified as Sys
 import UnliftIO (Exception, MonadIO, liftIO, throwIO)
@@ -99,7 +93,7 @@ data S2nError = S2nError
   -- ^ The raw error code
   , s2nErrorMessage :: !String
   -- ^ Human-readable error message
-  , s2nErrorDebug :: !(Maybe String)
+  , s2nErrorDebug :: !String
   -- ^ Debug information (if available)
   }
   deriving (Eq, Show)
@@ -128,11 +122,10 @@ fromSysBlockedStatus s = case s of
   S2N_BLOCKED_ON_EARLY_DATA -> Just BlockedOnEarlyData
   _ -> Nothing
 
--- | Get the last error information from the s2n library.
-getLastError :: (MonadIO m) => S2nTlsSys -> m S2nError
-getLastError sys = do
-  errnoPtr <- liftIO $ s2n_errno_location sys
-  errCode <- liftIO $ peek errnoPtr
+-- | Convert a sys-level S2nError to our richer S2nError type.
+fromSysError :: (MonadIO m) => S2nTlsSys -> Sys.S2nError -> m S2nError
+fromSysError sys sysErr = do
+  let errCode = Sys.s2nErrorCode sysErr
   errTypeRaw <- liftIO $ s2n_error_get_type sys errCode
   let errType = fromSysErrorType errTypeRaw
   msgPtr <- liftIO $ s2n_strerror sys errCode nullPtr
@@ -140,53 +133,36 @@ getLastError sys = do
     if msgPtr == nullPtr
       then pure "Unknown error"
       else peekCString msgPtr
-  debugPtr <- liftIO $ s2n_strerror_debug sys errCode nullPtr
-  debugMsg <-
-    if debugPtr == nullPtr
-      then pure Nothing
-      else Just <$> peekCString debugPtr
   pure
     S2nError
       { s2nErrorType = errType
       , s2nErrorCode = errCode
       , s2nErrorMessage = msg
-      , s2nErrorDebug = debugMsg
+      , s2nErrorDebug = Sys.s2nErrorDebugMessage sysErr
       }
 
--- | Throw an S2nError exception with current error state.
-throwS2nError :: (MonadIO m) => S2nTlsSys -> m a
-throwS2nError sys = do
-  err <- getLastError sys
-  throwIO err
-
-{- | Check the return value of an s2n function and throw on failure.
-Use this for functions that should not fail under normal circumstances.
+{- | Handle an Either result from the sys library, converting errors and
+throwing them as exceptions.
 -}
-checkReturn :: (MonadIO m) => S2nTlsSys -> IO CInt -> m ()
-checkReturn sys action = do
-  result <- liftIO action
-  case result of
-    S2N_SUCCESS -> pure ()
-    S2N_FAILURE -> throwS2nError sys
-    S2N_CALLBACK_BLOCKED -> throwS2nError sys
-    _ -> throwS2nError sys
+fromSysEither :: (MonadIO m) => S2nTlsSys -> Either Sys.S2nError a -> m a
+fromSysEither sys (Left sysErr) = do
+  err <- fromSysError sys sysErr
+  throwIO err
+fromSysEither _ (Right a) = pure a
 
 {- | Check the return value of an s2n function, returning 'Left Blocked'
 if the operation would block, or throwing an exception on other errors.
 Use this for I/O operations like negotiate, send, recv, shutdown.
 -}
-checkReturnWithBlocked :: (MonadIO m) => S2nTlsSys -> Ptr S2nBlockedStatus -> IO CInt -> m (Either Blocked ())
+checkReturnWithBlocked :: (MonadIO m) => S2nTlsSys -> Ptr S2nBlockedStatus -> IO (Either Sys.S2nError CInt) -> m (Either Blocked ())
 checkReturnWithBlocked sys blockedPtr action = do
   result <- liftIO action
   blockedStatus <- liftIO $ peek blockedPtr
   case result of
-    S2N_SUCCESS -> pure (Right ())
-    S2N_FAILURE -> do
+    Right _ -> pure (Right ())
+    Left _sysErr -> do
       case fromSysBlockedStatus blockedStatus of
         Just blocked -> pure (Left blocked)
-        Nothing -> throwS2nError sys
-    S2N_CALLBACK_BLOCKED -> do
-      case fromSysBlockedStatus blockedStatus of
-        Just blocked -> pure (Left blocked)
-        Nothing -> throwS2nError sys
-    _ -> throwS2nError sys
+        Nothing -> do
+          err <- fromSysError sys _sysErr
+          throwIO err

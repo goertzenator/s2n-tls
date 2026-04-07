@@ -1,16 +1,15 @@
--- |
--- Module      : S2nTls.Connection
--- Copyright   : (c) 2025
--- License     : BSD-3-Clause
--- Maintainer  : your.email@example.com
--- Stability   : experimental
--- Portability : non-portable (requires s2n-tls C library)
---
--- This module provides functions for creating, configuring, and using
--- TLS connections. All I/O operations return @'Either' 'Blocked' a@ to handle
--- non-blocking scenarios gracefully.
---
 {-# LANGUAGE PatternSynonyms #-}
+
+{- |
+Module      : S2nTls.Connection
+Copyright   : (c) 2026
+License     : BSD-3-Clause
+Maintainer  : daniel.goertzen@gmail.com
+
+This module provides functions for creating, configuring, and using
+TLS connections. All I/O operations return @'Either' 'Blocked' a@ to handle
+non-blocking scenarios gracefully.
+-}
 module S2nTls.Connection (
     -- * Connection Creation
     newConnection,
@@ -33,6 +32,7 @@ module S2nTls.Connection (
     send,
     recv,
     blockingSend,
+    blockingSendAll,
     blockingRecv,
 
     -- * Connection Shutdown
@@ -52,16 +52,16 @@ module S2nTls.Connection (
 ) where
 
 import Control.Concurrent (threadWaitRead, threadWaitWrite)
+import Control.Exception (mask_, throwIO)
+import Control.Monad
 import Data.ByteString (ByteString)
-import Data.ByteString.Internal qualified as BS
+import Data.ByteString qualified as BS
+import Data.ByteString.Internal qualified as BSI
 import Data.ByteString.Unsafe qualified as BS
+import Data.Foldable
 import Data.IORef (newIORef, readIORef, writeIORef)
-import Foreign.C.Types (CInt (..))
 import Foreign.Concurrent qualified as FC
-import System.Posix.Types (Fd (..))
-import UnliftIO (MonadIO, liftIO)
-import UnliftIO.Foreign (Ptr, alloca, castPtr, nullPtr, peek, peekCString, poke, withCString, withForeignPtr)
-import S2nTls.Error (Blocked (..), checkReturn, checkReturnWithBlocked, throwS2nError)
+import S2nTls.Error (Blocked (..), checkReturnWithBlocked, fromSysEither, fromSysError)
 import S2nTls.Sys.Types (
     S2nBlockedStatus (..),
     S2nConnection,
@@ -72,47 +72,57 @@ import S2nTls.Sys.Types (
     pattern S2N_BLOCKED_ON_WRITE,
     pattern S2N_NOT_BLOCKED,
  )
-import S2nTls.Types (Config, Connection (..), Mode (..), TlsVersion (..))
+import S2nTls.Types (Config (..), Connection (..), Mode (..), TlsVersion (..))
+import System.Posix.Types (Fd (..))
+import UnliftIO (MonadIO, liftIO)
+import UnliftIO.Foreign
 
 {- | Create a new TLS connection.
 The returned 'Connection' is automatically freed when garbage collected.
 -}
 newConnection :: (MonadIO m) => S2nTlsSys -> Mode -> m Connection
-newConnection sys (Mode mode) = do
-    ptr <- liftIO $ s2n_connection_new sys mode
-    if ptr == nullPtr
-        then throwS2nError sys
-        else liftIO $ do
-            fptr <- FC.newForeignPtr ptr (finalize ptr)
+newConnection sys (Mode mode) = liftIO $ mask_ $ do
+    result <- s2n_connection_new sys mode
+    case result of
+        Left err -> fromSysError sys err >>= throwIO
+        Right ptr -> do
             readFdRef <- newIORef Nothing
             writeFdRef <- newIORef Nothing
-            pure Connection
-                { connPtr = fptr
-                , connReadFd = readFdRef
-                , connWriteFd = writeFdRef
-                }
-  where
-    finalize :: Ptr S2nConnection -> IO ()
-    finalize p = do
-        _ <- s2n_connection_free sys p
-        pure ()
+            configRef <- newIORef Nothing
+            certKeysRef <- newIORef []
+            let
+                finalize :: Ptr S2nConnection -> IO ()
+                finalize p = do
+                    _ <- s2n_connection_free sys p
+                    -- assure all related resources are kept alive until the connection is fully freed
+                    readIORef configRef >>= traverse_ touchForeignPtr
+                    readIORef certKeysRef >>= traverse_ touchForeignPtr
+            fptr <- FC.newForeignPtr ptr (finalize ptr)
+            pure
+                Connection
+                    { connPtr = fptr
+                    , connReadFd = readFdRef
+                    , connWriteFd = writeFdRef
+                    , connConfig = configRef
+                    , connCertKeys = certKeysRef
+                    }
 
 -- | Set the configuration for a connection.
 setConnectionConfig :: (MonadIO m) => S2nTlsSys -> Connection -> Config -> m ()
 setConnectionConfig sys conn config =
-    liftIO $
-        withForeignPtr (connPtr conn) $ \cPtr ->
-            withForeignPtr config $ \configPtr ->
-                checkReturn sys $
-                    s2n_connection_set_config sys cPtr configPtr
+    liftIO $ do
+        void $ withForeignPtr (connPtr conn) $ \cPtr ->
+            withForeignPtr (configPtr config) $
+                s2n_connection_set_config sys cPtr >=> fromSysEither sys
+        -- Keep the config alive by storing a reference
+        writeIORef (connConfig conn) (Just (configPtr config))
 
 -- | Set both read and write file descriptors for the connection.
 setFd :: (MonadIO m) => S2nTlsSys -> Connection -> CInt -> m ()
 setFd sys conn fd =
     liftIO $ do
-        withForeignPtr (connPtr conn) $ \cPtr ->
-            checkReturn sys $
-                s2n_connection_set_fd sys cPtr fd
+        void $ withForeignPtr (connPtr conn) $ \cPtr ->
+            s2n_connection_set_fd sys cPtr fd >>= fromSysEither sys
         writeIORef (connReadFd conn) (Just fd)
         writeIORef (connWriteFd conn) (Just fd)
 
@@ -120,18 +130,16 @@ setFd sys conn fd =
 setReadFd :: (MonadIO m) => S2nTlsSys -> Connection -> CInt -> m ()
 setReadFd sys conn fd =
     liftIO $ do
-        withForeignPtr (connPtr conn) $ \cPtr ->
-            checkReturn sys $
-                s2n_connection_set_read_fd sys cPtr fd
+        void $ withForeignPtr (connPtr conn) $ \cPtr ->
+            s2n_connection_set_read_fd sys cPtr fd >>= fromSysEither sys
         writeIORef (connReadFd conn) (Just fd)
 
 -- | Set the write file descriptor for the connection.
 setWriteFd :: (MonadIO m) => S2nTlsSys -> Connection -> CInt -> m ()
 setWriteFd sys conn fd =
     liftIO $ do
-        withForeignPtr (connPtr conn) $ \cPtr ->
-            checkReturn sys $
-                s2n_connection_set_write_fd sys cPtr fd
+        void $ withForeignPtr (connPtr conn) $ \cPtr ->
+            s2n_connection_set_write_fd sys cPtr fd >>= fromSysEither sys
         writeIORef (connWriteFd conn) (Just fd)
 
 {- | Set the server name for SNI (Server Name Indication).
@@ -139,11 +147,11 @@ This should be called before 'negotiate' for client connections.
 -}
 setServerName :: (MonadIO m) => S2nTlsSys -> Connection -> String -> m ()
 setServerName sys conn name =
-    liftIO $
-        withForeignPtr (connPtr conn) $ \cPtr ->
-            withCString name $ \namePtr ->
-                checkReturn sys $
-                    s2n_set_server_name sys cPtr namePtr
+    void $
+        liftIO $
+            withForeignPtr (connPtr conn) $ \cPtr ->
+                withCString name $
+                    s2n_set_server_name sys cPtr >=> fromSysEither sys
 
 {- | Get the server name from the connection.
 Returns 'Nothing' if no server name is set.
@@ -152,10 +160,13 @@ getServerName :: (MonadIO m) => S2nTlsSys -> Connection -> m (Maybe String)
 getServerName sys conn =
     liftIO $
         withForeignPtr (connPtr conn) $ \cPtr -> do
-            namePtr <- s2n_get_server_name sys cPtr
-            if namePtr == nullPtr
-                then pure Nothing
-                else Just <$> peekCString namePtr
+            result <- s2n_get_server_name sys cPtr
+            case result of
+                Left _ -> pure Nothing
+                Right namePtr ->
+                    if namePtr == nullPtr
+                        then pure Nothing
+                        else Just <$> peekCString namePtr
 
 {- | Perform the TLS handshake (non-blocking).
 Returns 'Left blocked' if the operation would block on I/O.
@@ -180,23 +191,24 @@ send :: (MonadIO m) => S2nTlsSys -> Connection -> ByteString -> m (Either Blocke
 send sys conn bs =
     liftIO $
         withForeignPtr (connPtr conn) $ \cPtr ->
-            alloca $ \blockedPtr ->
-                BS.unsafeUseAsCStringLen bs $ \(ptr, len) -> do
-                    poke blockedPtr S2N_NOT_BLOCKED
-                    result <-
-                        s2n_send
-                            sys
-                            cPtr
-                            (castPtr ptr)
-                            (fromIntegral len)
-                            blockedPtr
-                    blocked <- peek blockedPtr
-                    if result < 0
-                        then do
-                            case toBlocked blocked of
-                                Just b -> pure (Left b)
-                                Nothing -> throwS2nError sys
-                        else pure (Right (fromIntegral result))
+            alloca $ \blockedPtr -> do
+                poke blockedPtr S2N_NOT_BLOCKED
+                result <- BS.unsafeUseAsCStringLen bs $ \(ptr, len) -> do
+                    s2n_send
+                        sys
+                        cPtr
+                        (castPtr ptr)
+                        (fromIntegral len)
+                        blockedPtr
+                blocked <- peek blockedPtr
+                case result of
+                    Right n -> pure (Right (fromIntegral n))
+                    Left sysErr -> do
+                        case toBlocked blocked of
+                            Just b -> pure (Left b)
+                            Nothing -> do
+                                err <- fromSysError sys sysErr
+                                throwIO err
 
 {- | Receive data from the TLS connection (non-blocking).
 Returns 'Left blocked' if the operation would block on I/O.
@@ -209,22 +221,23 @@ recv sys conn maxLen =
         withForeignPtr (connPtr conn) $ \cPtr ->
             alloca $ \blockedPtr -> do
                 poke blockedPtr S2N_NOT_BLOCKED
-                fptr <- BS.mallocByteString maxLen
-                withForeignPtr fptr $ \ptr -> do
-                    result <-
-                        s2n_recv
-                            sys
-                            cPtr
-                            (castPtr ptr)
-                            (fromIntegral maxLen)
-                            blockedPtr
-                    blocked <- peek blockedPtr
-                    if result < 0
-                        then do
-                            case toBlocked blocked of
-                                Just b -> pure (Left b)
-                                Nothing -> throwS2nError sys
-                        else pure (Right (BS.fromForeignPtr fptr 0 (fromIntegral result)))
+                fptr <- BSI.mallocByteString maxLen
+                result <- withForeignPtr fptr $ \ptr -> do
+                    s2n_recv
+                        sys
+                        cPtr
+                        (castPtr ptr)
+                        (fromIntegral maxLen)
+                        blockedPtr
+                blocked <- peek blockedPtr
+                case result of
+                    Right n -> pure (Right (BSI.fromForeignPtr fptr 0 (fromIntegral n)))
+                    Left sysErr -> do
+                        case toBlocked blocked of
+                            Just b -> pure (Left b)
+                            Nothing -> do
+                                err <- fromSysError sys sysErr
+                                throwIO err
 
 {- | Shutdown the TLS connection (bidirectional, non-blocking).
 Returns 'Left blocked' if the operation would block on I/O.
@@ -259,64 +272,72 @@ getApplicationProtocol :: (MonadIO m) => S2nTlsSys -> Connection -> m (Maybe Str
 getApplicationProtocol sys conn =
     liftIO $
         withForeignPtr (connPtr conn) $ \cPtr -> do
-            protoPtr <- s2n_get_application_protocol sys cPtr
-            if protoPtr == nullPtr
-                then pure Nothing
-                else Just <$> peekCString protoPtr
+            result <- s2n_get_application_protocol sys cPtr
+            case result of
+                Left _ -> pure Nothing
+                Right protoPtr ->
+                    if protoPtr == nullPtr
+                        then pure Nothing
+                        else Just <$> peekCString protoPtr
 
 -- | Get the actual negotiated TLS protocol version.
 getActualProtocolVersion :: (MonadIO m) => S2nTlsSys -> Connection -> m TlsVersion
-getActualProtocolVersion sys conn =
-    liftIO $
-        withForeignPtr (connPtr conn) $ \cPtr -> do
-            version <- s2n_connection_get_actual_protocol_version sys cPtr
-            pure (TlsVersion version)
+getActualProtocolVersion sys conn = do
+    version <-
+        liftIO $
+            withForeignPtr (connPtr conn) $
+                s2n_connection_get_actual_protocol_version sys >=> fromSysEither sys
+    pure (TlsVersion version)
 
 -- | Get the negotiated cipher suite name.
 getCipher :: (MonadIO m) => S2nTlsSys -> Connection -> m String
 getCipher sys conn =
     liftIO $
         withForeignPtr (connPtr conn) $ \cPtr -> do
-            cipherPtr <- s2n_connection_get_cipher sys cPtr
-            if cipherPtr == nullPtr
-                then pure ""
-                else peekCString cipherPtr
+            result <- s2n_connection_get_cipher sys cPtr
+            case result of
+                Left _ -> pure ""
+                Right cipherPtr ->
+                    if cipherPtr == nullPtr
+                        then pure ""
+                        else peekCString cipherPtr
 
 -- | Check if this connection is a resumed session.
 isSessionResumed :: (MonadIO m) => S2nTlsSys -> Connection -> m Bool
-isSessionResumed sys conn =
-    liftIO $
-        withForeignPtr (connPtr conn) $ \cPtr -> do
-            result <- s2n_connection_is_session_resumed sys cPtr
-            pure (result /= 0)
+isSessionResumed sys conn = do
+    val <-
+        liftIO $
+            withForeignPtr (connPtr conn) $
+                s2n_connection_is_session_resumed sys >=> fromSysEither sys
+    pure (val /= 0)
 
 {- | Wipe the connection for reuse.
 This clears all connection state except the configuration.
 -}
 wipeConnection :: (MonadIO m) => S2nTlsSys -> Connection -> m ()
 wipeConnection sys conn =
-    liftIO $
-        withForeignPtr (connPtr conn) $ \cPtr ->
-            checkReturn sys $
-                s2n_connection_wipe sys cPtr
+    void $
+        liftIO $
+            withForeignPtr (connPtr conn) $
+                s2n_connection_wipe sys >=> fromSysEither sys
 
 {- | Free handshake-related memory after the handshake is complete.
 This can reduce memory usage for long-lived connections.
 -}
 freeHandshake :: (MonadIO m) => S2nTlsSys -> Connection -> m ()
 freeHandshake sys conn =
-    liftIO $
-        withForeignPtr (connPtr conn) $ \cPtr ->
-            checkReturn sys $
-                s2n_connection_free_handshake sys cPtr
+    void $
+        liftIO $
+            withForeignPtr (connPtr conn) $
+                s2n_connection_free_handshake sys >=> fromSysEither sys
 
 -- | Release all buffers associated with the connection.
 releaseBuffers :: (MonadIO m) => S2nTlsSys -> Connection -> m ()
 releaseBuffers sys conn =
-    liftIO $
-        withForeignPtr (connPtr conn) $ \cPtr ->
-            checkReturn sys $
-                s2n_connection_release_buffers sys cPtr
+    void $
+        liftIO $
+            withForeignPtr (connPtr conn) $
+                s2n_connection_release_buffers sys >=> fromSysEither sys
 
 {- | Perform the TLS handshake (blocking).
 This function will block (using GHC's I/O manager) until the handshake
@@ -351,6 +372,19 @@ blockingSend sys conn bs = go
                 liftIO $ waitOnBlocked conn blocked
                 go
 
+{- | Send all data over the TLS connection (blocking).
+This function will block (using GHC's I/O manager) until all data
+is sent or an error occurs.
+Unlike 'blockingSend', this function loops until the entire 'ByteString'
+has been transmitted.
+-}
+blockingSendAll :: (MonadIO m) => S2nTlsSys -> Connection -> ByteString -> m ()
+blockingSendAll sys conn bs
+    | BS.null bs = pure ()
+    | otherwise = do
+        n <- blockingSend sys conn bs
+        blockingSendAll sys conn (BS.drop n bs)
+
 {- | Receive data from the TLS connection (blocking).
 This function will block (using GHC's I/O manager) until data is
 available or an error occurs.
@@ -368,8 +402,9 @@ blockingRecv sys conn maxLen = go
                 liftIO $ waitOnBlocked conn blocked
                 go
 
--- | Wait on a blocked status using GHC's I/O manager.
--- Uses readfd/writefd in preference to fd.
+{- | Wait on a blocked status using GHC's I/O manager.
+Uses readfd/writefd in preference to fd.
+-}
 waitOnBlocked :: Connection -> Blocked -> IO ()
 waitOnBlocked conn blocked = case blocked of
     BlockedOnRead -> do
