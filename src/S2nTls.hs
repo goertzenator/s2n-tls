@@ -6,7 +6,7 @@
 -- License     : BSD-3-Clause
 --
 -- This module provides safe, high-level Haskell bindings to the s2n-tls library.
--- It wraps the low-level FFI bindings from "S2nTls.Sys" with:
+-- It wraps the low-level FFI bindings from "S2nTls.Ffi" with:
 --
 -- \* Automatic memory management using 'ForeignPtr'
 -- \* Haskell-idiomatic error handling with exceptions and 'Either'
@@ -16,10 +16,9 @@
 --
 -- @
 -- import S2nTls
--- import S2nTls.Sys (getLinkedTlsSys)
 --
 -- main :: IO ()
--- main = withS2nTls getLinkedTlsSys $ \\tls -> do
+-- main = withS2nTls Linked $ \\tls -> do
 --     -- Create a configuration
 --     config <- newConfig tls
 --     loadSystemCerts tls config
@@ -96,8 +95,8 @@ module S2nTls (
     S2nError (..),
     S2nErrorType (..),
 
-    -- * Re-exports from s2n-tls-sys
-    S2nTlsSys (..),
+    -- * Re-exports from s2n-tls-ffi
+    Library (..),
 ) where
 
 import Control.Monad
@@ -106,8 +105,9 @@ import Foreign.C.Types (CInt)
 import Network.Socket (Socket)
 import S2nTls.Config qualified as Config
 import S2nTls.Connection qualified as Conn
-import S2nTls.Error (S2nError (..), S2nErrorType (..), fromSysEither)
-import S2nTls.Sys.Types (S2nTlsSys (..))
+import S2nTls.Error (S2nError (..), S2nErrorType (..), fromFfiEither)
+import S2nTls.Ffi (Library (..), withS2nTlsFfi)
+import S2nTls.Ffi.Types (S2nTlsFfi (..))
 import S2nTls.Types
 import UnliftIO
 
@@ -224,7 +224,7 @@ data S2nTls m = S2nTls
     }
 
 {- | Initialize the s2n-tls library and run an action with a high-level API.
-This handles library setup and cleanup automatically.
+This handles library loading, setup, and cleanup automatically.
 
 The s2n-tls library must be initialized before any other s2n functions
 are called, and cleaned up when done. This function ensures proper
@@ -234,61 +234,62 @@ Example:
 
 @
 import S2nTls
-import S2nTls.Sys (getLinkedTlsSys)
 
-main = withS2nTls getLinkedTlsSys $ \\tls -> do
+main = withS2nTls Linked $ \\tls -> do
     config <- tls.newConfig
     -- ... use the TLS API ...
 @
 -}
-withS2nTls :: (MonadUnliftIO m) => S2nTlsSys -> (S2nTls m -> m a) -> m a
-withS2nTls sys =
-    bracket
-        ( do
-            -- Call s2n_init.
-            void $ liftIO $ s2n_init sys >>= fromSysEither sys
-            pure $ mkS2nTls sys
-        )
-        (\_ -> liftIO $ s2n_cleanup sys)
+withS2nTls :: (MonadUnliftIO m) => Library -> (S2nTls m -> m a) -> m a
+withS2nTls lib action = withRunInIO $ \runInIO ->
+    withS2nTlsFfi lib $ \ffi ->
+        runInIO $
+            bracket
+                ( do
+                    void $ liftIO $ s2n_init ffi >>= fromFfiEither ffi
+                    pure $ mkS2nTls ffi
+                )
+                (\_ -> liftIO $ s2n_cleanup ffi)
+                action
 
--- | Create the S2nTls record from the low-level sys bindings.
-mkS2nTls :: (MonadIO m) => S2nTlsSys -> S2nTls m
-mkS2nTls sys =
+-- | Create the S2nTls record from the low-level FFI bindings.
+mkS2nTls :: (MonadIO m) => S2nTlsFfi -> S2nTls m
+mkS2nTls ffi =
     S2nTls
-        { newConfig = Config.newConfig sys
-        , newConfigMinimal = Config.newConfigMinimal sys
-        , loadCertChainAndKeyPem = Config.loadCertChainAndKeyPem sys
-        , addCertChainAndKeyToStore = Config.addCertChainAndKeyToStore sys
-        , setVerificationCaLocation = Config.setVerificationCaLocation sys
-        , addPemToTrustStore = Config.addPemToTrustStore sys
-        , wipeTrustStore = Config.wipeTrustStore sys
-        , loadSystemCerts = Config.loadSystemCerts sys
-        , setCipherPreferences = Config.setCipherPreferences sys
-        , setClientAuthType = Config.setClientAuthType sys
-        , disableX509Verification = Config.disableX509Verification sys
-        , setProtocolPreferences = Config.setProtocolPreferences sys
-        , newConnection = Conn.newConnection sys
-        , setConnectionConfig = Conn.setConnectionConfig sys
-        , setFd = Conn.setFd sys
-        , setReadFd = Conn.setReadFd sys
-        , setWriteFd = Conn.setWriteFd sys
-        , setSocket = Conn.setSocket sys
-        , setServerName = Conn.setServerName sys
-        , getServerName = Conn.getServerName sys
-        , negotiate = Conn.negotiate sys
-        , blockingNegotiate = Conn.blockingNegotiate sys
-        , send = Conn.send sys
-        , blockingSend = Conn.blockingSend sys
-        , blockingSendAll = Conn.blockingSendAll sys
-        , recv = Conn.recv sys
-        , blockingRecv = Conn.blockingRecv sys
-        , shutdown = Conn.shutdown sys
-        , shutdownSend = Conn.shutdownSend sys
-        , getApplicationProtocol = Conn.getApplicationProtocol sys
-        , getActualProtocolVersion = Conn.getActualProtocolVersion sys
-        , getCipher = Conn.getCipher sys
-        , isSessionResumed = Conn.isSessionResumed sys
-        , wipeConnection = Conn.wipeConnection sys
-        , freeHandshake = Conn.freeHandshake sys
-        , releaseBuffers = Conn.releaseBuffers sys
+        { newConfig = Config.newConfig ffi
+        , newConfigMinimal = Config.newConfigMinimal ffi
+        , loadCertChainAndKeyPem = Config.loadCertChainAndKeyPem ffi
+        , addCertChainAndKeyToStore = Config.addCertChainAndKeyToStore ffi
+        , setVerificationCaLocation = Config.setVerificationCaLocation ffi
+        , addPemToTrustStore = Config.addPemToTrustStore ffi
+        , wipeTrustStore = Config.wipeTrustStore ffi
+        , loadSystemCerts = Config.loadSystemCerts ffi
+        , setCipherPreferences = Config.setCipherPreferences ffi
+        , setClientAuthType = Config.setClientAuthType ffi
+        , disableX509Verification = Config.disableX509Verification ffi
+        , setProtocolPreferences = Config.setProtocolPreferences ffi
+        , newConnection = Conn.newConnection ffi
+        , setConnectionConfig = Conn.setConnectionConfig ffi
+        , setFd = Conn.setFd ffi
+        , setReadFd = Conn.setReadFd ffi
+        , setWriteFd = Conn.setWriteFd ffi
+        , setSocket = Conn.setSocket ffi
+        , setServerName = Conn.setServerName ffi
+        , getServerName = Conn.getServerName ffi
+        , negotiate = Conn.negotiate ffi
+        , blockingNegotiate = Conn.blockingNegotiate ffi
+        , send = Conn.send ffi
+        , blockingSend = Conn.blockingSend ffi
+        , blockingSendAll = Conn.blockingSendAll ffi
+        , recv = Conn.recv ffi
+        , blockingRecv = Conn.blockingRecv ffi
+        , shutdown = Conn.shutdown ffi
+        , shutdownSend = Conn.shutdownSend ffi
+        , getApplicationProtocol = Conn.getApplicationProtocol ffi
+        , getActualProtocolVersion = Conn.getActualProtocolVersion ffi
+        , getCipher = Conn.getCipher ffi
+        , isSessionResumed = Conn.isSessionResumed ffi
+        , wipeConnection = Conn.wipeConnection ffi
+        , freeHandshake = Conn.freeHandshake ffi
+        , releaseBuffers = Conn.releaseBuffers ffi
         }

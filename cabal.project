@@ -1,4 +1,4 @@
 packages: .
 
--- During development, use the local s2n-tls-sys package
-optional-packages: ../s2n-tls-sys
+-- During development, use the local s2n-tls-ffi package
+optional-packages: ../s2n-tls-ffi

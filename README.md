@@ -22,10 +22,9 @@ cabal build
 
 ```haskell
 import S2nTls
-import S2nTls.Sys (getLinkedTlsSys)
 
 main :: IO ()
-main = withS2nTls getLinkedTlsSys $ \tls -> do
+main = withS2nTls Linked $ \tls -> do
     -- Create a configuration
     config <- newConfig tls
     loadSystemCerts tls config
@@ -77,7 +76,7 @@ The library distinguishes between:
 
 ## Dependencies
 
-- [s2n-tls-sys](https://hackage.haskell.org/package/s2n-tls-sys) - Low-level FFI bindings
+- [s2n-tls-ffi](https://hackage.haskell.org/package/s2n-tls-ffi) - Low-level FFI bindings
 - [unliftio](https://hackage.haskell.org/package/unliftio) - For `MonadIO` and `MonadUnliftIO`
 
 ## License

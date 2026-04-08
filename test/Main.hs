@@ -16,7 +16,6 @@ import Control.Monad (void)
 import Data.ByteString qualified as BS
 import Network.Socket qualified as Net
 import S2nTls
-import S2nTls.Sys (withLinkedTlsSys)
 import System.Directory (getCurrentDirectory)
 import System.IO (Handle, hFlush, hGetLine, hPutStrLn)
 import System.Process (
@@ -34,7 +33,7 @@ import UnliftIO (timeout)
 
 main :: IO ()
 main =
-    withLinkedTlsSys $ \sys -> withS2nTls sys $ \tls ->
+    withS2nTls Linked $ \tls ->
         defaultMain (tests tls)
 
 tests :: S2nTls IO -> TestTree

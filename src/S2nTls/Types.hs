@@ -40,7 +40,7 @@ import Foreign.C.Types (CInt)
 import Foreign.ForeignPtr (ForeignPtr)
 import Network.Socket qualified as Net
 import S2nTls.Error (Blocked (..))
-import S2nTls.Sys.Types (
+import S2nTls.Ffi.Types (
   S2nCertAuthType,
   S2nCertChainAndKey,
   S2nConfig,
