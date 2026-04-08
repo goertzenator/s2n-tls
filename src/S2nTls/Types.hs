@@ -38,6 +38,7 @@ module S2nTls.Types (
 import Data.IORef (IORef)
 import Foreign.C.Types (CInt)
 import Foreign.ForeignPtr (ForeignPtr)
+import Network.Socket qualified as Net
 import S2nTls.Error (Blocked (..))
 import S2nTls.Sys.Types (
   S2nCertAuthType,
@@ -64,6 +65,9 @@ data Config = Config
   -- ^ Certificate chain and key pairs added to this config
   }
 
+instance Show Config where
+  show _ = "Config {<opaque>}"
+
 {- | A managed TLS connection.
 Resources are automatically freed when the 'Connection' is garbage collected.
 The connection also tracks file descriptors for blocking I/O support,
@@ -80,7 +84,12 @@ data Connection = Connection
   -- ^ The currently assigned config (kept alive to prevent GC)
   , connCertKeys :: !(IORef [ForeignPtr S2nCertChainAndKey])
   -- ^ Certificate chain and key pairs (kept alive to prevent GC)
+  , connSocket :: !(IORef (Maybe Net.Socket))
+  -- ^ Socket reference (kept alive to prevent GC)
   }
+
+instance Show Connection where
+  show _ = "Connection {<opaque>}"
 
 {- | A managed certificate chain and key pair.
 Resources are automatically freed when garbage collected.

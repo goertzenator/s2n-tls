@@ -103,6 +103,7 @@ module S2nTls (
 import Control.Monad
 import Data.ByteString (ByteString)
 import Foreign.C.Types (CInt)
+import Network.Socket (Socket)
 import S2nTls.Config qualified as Config
 import S2nTls.Connection qualified as Conn
 import S2nTls.Error (S2nError (..), S2nErrorType (..), fromSysEither)
@@ -174,6 +175,8 @@ data S2nTls m = S2nTls
     -- ^ Set the read file descriptor.
     , setWriteFd :: Connection -> CInt -> m ()
     -- ^ Set the write file descriptor.
+    , setSocket :: Connection -> Socket -> m ()
+    -- ^ Set a socket, storing the reference and extracting the file descriptor.
     , setServerName :: Connection -> String -> m ()
     -- ^ Set the server name for SNI.
     , getServerName :: Connection -> m (Maybe String)
@@ -269,6 +272,7 @@ mkS2nTls sys =
         , setFd = Conn.setFd sys
         , setReadFd = Conn.setReadFd sys
         , setWriteFd = Conn.setWriteFd sys
+        , setSocket = Conn.setSocket sys
         , setServerName = Conn.setServerName sys
         , getServerName = Conn.getServerName sys
         , negotiate = Conn.negotiate sys

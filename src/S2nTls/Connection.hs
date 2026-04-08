@@ -19,6 +19,7 @@ module S2nTls.Connection (
     setFd,
     setReadFd,
     setWriteFd,
+    setSocket,
 
     -- * Server Name (SNI)
     setServerName,
@@ -61,6 +62,7 @@ import Data.ByteString.Unsafe qualified as BS
 import Data.Foldable
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Foreign.Concurrent qualified as FC
+import Network.Socket qualified as Net
 import S2nTls.Error (Blocked (..), checkReturnWithBlocked, fromSysEither, fromSysError)
 import S2nTls.Sys.Types (
     S2nBlockedStatus (..),
@@ -90,6 +92,7 @@ newConnection sys (Mode mode) = liftIO $ mask_ $ do
             writeFdRef <- newIORef Nothing
             configRef <- newIORef Nothing
             certKeysRef <- newIORef []
+            socketRef <- newIORef Nothing
             let
                 finalize :: Ptr S2nConnection -> IO ()
                 finalize p = do
@@ -105,6 +108,7 @@ newConnection sys (Mode mode) = liftIO $ mask_ $ do
                     , connWriteFd = writeFdRef
                     , connConfig = configRef
                     , connCertKeys = certKeysRef
+                    , connSocket = socketRef
                     }
 
 -- | Set the configuration for a connection.
@@ -140,6 +144,20 @@ setWriteFd sys conn fd =
     liftIO $ do
         void $ withForeignPtr (connPtr conn) $ \cPtr ->
             s2n_connection_set_write_fd sys cPtr fd >>= fromSysEither sys
+        writeIORef (connWriteFd conn) (Just fd)
+
+{- | Set a socket for the connection.
+This stores the socket reference to prevent it from being garbage collected,
+extracts the file descriptor, and sets it on the connection.
+-}
+setSocket :: (MonadIO m) => S2nTlsSys -> Connection -> Net.Socket -> m ()
+setSocket sys conn sock =
+    liftIO $ do
+        writeIORef (connSocket conn) (Just sock)
+        fd <- Net.unsafeFdSocket sock
+        void $ withForeignPtr (connPtr conn) $ \cPtr ->
+            s2n_connection_set_fd sys cPtr fd >>= fromSysEither sys
+        writeIORef (connReadFd conn) (Just fd)
         writeIORef (connWriteFd conn) (Just fd)
 
 {- | Set the server name for SNI (Server Name Indication).
@@ -179,8 +197,8 @@ negotiate sys conn =
         withForeignPtr (connPtr conn) $ \cPtr ->
             alloca $ \blockedPtr -> do
                 poke blockedPtr S2N_NOT_BLOCKED
-                checkReturnWithBlocked sys blockedPtr $
-                    s2n_negotiate sys cPtr blockedPtr
+                checkReturnWithBlocked sys blockedPtr
+                    =<< s2n_negotiate sys cPtr blockedPtr
 
 {- | Send data over the TLS connection (non-blocking).
 Returns 'Left blocked' if the operation would block on I/O.
@@ -249,8 +267,8 @@ shutdown sys conn =
         withForeignPtr (connPtr conn) $ \cPtr ->
             alloca $ \blockedPtr -> do
                 poke blockedPtr S2N_NOT_BLOCKED
-                checkReturnWithBlocked sys blockedPtr $
-                    s2n_shutdown sys cPtr blockedPtr
+                checkReturnWithBlocked sys blockedPtr
+                    =<< s2n_shutdown sys cPtr blockedPtr
 
 {- | Shutdown only the send side of the TLS connection (non-blocking).
 Returns 'Left blocked' if the operation would block on I/O.
@@ -262,8 +280,8 @@ shutdownSend sys conn =
         withForeignPtr (connPtr conn) $ \cPtr ->
             alloca $ \blockedPtr -> do
                 poke blockedPtr S2N_NOT_BLOCKED
-                checkReturnWithBlocked sys blockedPtr $
-                    s2n_shutdown_send sys cPtr blockedPtr
+                checkReturnWithBlocked sys blockedPtr
+                    =<< s2n_shutdown_send sys cPtr blockedPtr
 
 {- | Get the negotiated application protocol (ALPN).
 Returns 'Nothing' if no application protocol was negotiated.

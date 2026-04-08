@@ -154,15 +154,24 @@ fromSysEither _ (Right a) = pure a
 if the operation would block, or throwing an exception on other errors.
 Use this for I/O operations like negotiate, send, recv, shutdown.
 -}
-checkReturnWithBlocked :: (MonadIO m) => S2nTlsSys -> Ptr S2nBlockedStatus -> IO (Either Sys.S2nError CInt) -> m (Either Blocked ())
-checkReturnWithBlocked sys blockedPtr action = do
-  result <- liftIO action
+checkReturnWithBlocked :: (MonadIO m) => S2nTlsSys -> Ptr S2nBlockedStatus -> Either Sys.S2nError CInt -> m (Either Blocked ())
+checkReturnWithBlocked sys blockedPtr result = do
   blockedStatus <- liftIO $ peek blockedPtr
   case result of
     Right _ -> pure (Right ())
-    Left _sysErr -> do
-      case fromSysBlockedStatus blockedStatus of
-        Just blocked -> pure (Left blocked)
-        Nothing -> do
-          err <- fromSysError sys _sysErr
+    Left sysErr -> do
+      -- Error type must always be inspected.  Blocked result alone is not sufficient for determining if we are blocked.
+      errTypeRaw <- liftIO (s2n_error_get_type sys (Sys.s2nErrorCode sysErr))
+      case errTypeRaw of
+        S2N_ERR_T_BLOCKED -> do
+          case fromSysBlockedStatus blockedStatus of
+            Just blocked -> do
+              pure (Left blocked)
+            Nothing -> do
+              -- unknown block status, should never happen
+              err <- fromSysError sys sysErr
+              throwIO err
+        _ -> do
+          -- not a blocking error, throw it
+          err <- fromSysError sys sysErr
           throwIO err

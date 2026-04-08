@@ -14,7 +14,6 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Exception (bracket)
 import Control.Monad (void)
 import Data.ByteString qualified as BS
-import Foreign.C.Types (CInt (..))
 import Network.Socket qualified as Net
 import S2nTls
 import S2nTls.Sys (withLinkedTlsSys)
@@ -74,36 +73,34 @@ testClientMode tls = do
         threadDelay 500000 -- 500ms
 
         -- Connect with s2n-tls client
-        -- Create socket and connect
         bracket (connectToServer "127.0.0.1" port) Net.close $ \sock -> do
-            Net.withFdSocket sock $ \fd -> do
-                -- Create and configure connection
-                config <- tls.newConfig
-                tls.disableX509Verification config
-                tls.setCipherPreferences config "default_tls13"
+            -- Create and configure connection
+            config <- tls.newConfig
+            tls.disableX509Verification config
+            tls.setCipherPreferences config "default_tls13"
 
-                conn <- tls.newConnection Client
-                tls.setConnectionConfig conn config
-                tls.setServerName conn "localhost"
-                tls.setFd conn fd
+            conn <- tls.newConnection Client
+            tls.setConnectionConfig conn config
+            tls.setServerName conn "localhost"
+            tls.setSocket conn sock
 
-                -- Perform handshake
-                tls.blockingNegotiate conn
+            -- Perform handshake
+            tls.blockingNegotiate conn
 
-                -- Send data
-                let testData = "Hello from s2n-tls client!"
-                void $ tls.blockingSendAll conn (testData <> "\n")
+            -- Send data
+            let testData = "Hello from s2n-tls client!"
+            tls.blockingSendAll conn (testData <> "\n")
 
-                -- Receive response
-                response <- tls.blockingRecv conn 1024
-                assertBool "Should receive response" (not (BS.null response))
-                assertEqual "Response should match" (BS.reverse testData <> "\n") response
+            -- Receive response
+            response <- tls.blockingRecv conn 1024
+            assertBool "Should receive response" (not (BS.null response))
+            assertEqual "Response should match" (BS.reverse testData <> "\n") response
 
-                -- Shutdown
-                result <- timeout 2000000 $ shutdownLoop tls conn
-                case result of
-                    Nothing -> pure () -- Timeout is OK, openssl may not send close_notify
-                    Just _ -> pure ()
+            -- Shutdown
+            result <- timeout 2000000 $ shutdownLoop tls conn
+            case result of
+                Nothing -> pure () -- Timeout is OK, openssl may not send close_notify
+                Just _ -> pure ()
 
 -- | Test server mode: accept connection from openssl s_client
 testServerMode :: S2nTls IO -> IO ()
@@ -139,34 +136,34 @@ testServerMode tls = do
 
         -- Accept connection
         (clientSock, _) <- Net.accept serverSock
-        Net.withFdSocket clientSock $ \fd -> do
-            -- Create and configure connection
-            config <- tls.newConfig
-            tls.setCipherPreferences config "default_tls13"
 
-            -- Load certificate
-            certKey <- tls.loadCertChainAndKeyPem certPem keyPem
-            tls.addCertChainAndKeyToStore config certKey
+        -- Create and configure connection
+        config <- tls.newConfig
+        tls.setCipherPreferences config "default_tls13"
 
-            conn <- tls.newConnection Server
-            tls.setConnectionConfig conn config
-            tls.setFd conn (CInt (fromIntegral fd))
+        -- Load certificate
+        certKey <- tls.loadCertChainAndKeyPem certPem keyPem
+        tls.addCertChainAndKeyToStore config certKey
 
-            -- Perform handshake
-            tls.blockingNegotiate conn
+        conn <- tls.newConnection Server
+        tls.setConnectionConfig conn config
+        tls.setSocket conn clientSock
 
-            putStrLn "Handshake complete, exchanging data..."
-            -- Receive data from client
-            received <- tls.blockingRecv conn 1024
-            putStrLn $ "Received from client: " ++ show received
-            assertBool "Should receive data from client" (not (BS.null received))
+        -- Perform handshake
+        tls.blockingNegotiate conn
 
-            -- Send response
-            void $ tls.blockingSendAll conn (((<> "\n") . BS.drop 1 . BS.reverse) received)
-            putStrLn "Sent response to client"
+        putStrLn "Handshake complete, exchanging data..."
+        -- Receive data from client
+        received <- tls.blockingRecv conn 1024
+        putStrLn $ "Received from client: " ++ show received
+        assertBool "Should receive data from client" (not (BS.null received))
 
-            -- Cleanup
-            Net.close clientSock
+        -- Send response
+        tls.blockingSendAll conn (((<> "\n") . BS.drop 1 . BS.reverse) received)
+        putStrLn "Sent response to client"
+
+        -- Cleanup
+        Net.close clientSock
 
 -- | Loop shutdown until complete
 shutdownLoop :: S2nTls IO -> Connection -> IO ()
