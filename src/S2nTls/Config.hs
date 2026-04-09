@@ -35,7 +35,7 @@ import Control.Monad
 import Data.ByteString (ByteString)
 import Data.ByteString.Unsafe qualified as BS
 import Data.IORef (modifyIORef', newIORef)
-import Foreign.C.String (CString)
+import Foreign.C.String (CString, withCString)
 import Foreign.Concurrent qualified as FC
 import S2nTls.Error (fromFfiEither, fromFfiError)
 import S2nTls.Ffi.Types (
@@ -44,14 +44,13 @@ import S2nTls.Ffi.Types (
     S2nTlsFfi (..),
  )
 import S2nTls.Types (CertAuthType (..), CertChainAndKey, Config (..))
-import UnliftIO (MonadIO, liftIO)
-import UnliftIO.Foreign (Ptr, castPtr, nullPtr, withArray, withCString, withForeignPtr)
+import Foreign (Ptr, castPtr, nullPtr, withArray, withForeignPtr)
 
 {- | Create a new TLS configuration with default settings.
 The returned 'Config' is automatically freed when garbage collected.
 -}
-newConfig :: (MonadIO m) => S2nTlsFfi -> m Config
-newConfig ffi = liftIO $ mask_ $ do
+newConfig :: S2nTlsFfi -> IO Config
+newConfig ffi = mask_ $ do
     result <- s2n_config_new ffi
     case result of
         Left err -> fromFfiError ffi err >>= throwIO
@@ -72,8 +71,8 @@ newConfig ffi = liftIO $ mask_ $ do
 {- | Create a new minimal TLS configuration.
 This configuration has fewer default settings than 'newConfig'.
 -}
-newConfigMinimal :: (MonadIO m) => S2nTlsFfi -> m Config
-newConfigMinimal ffi = liftIO $ mask_ $ do
+newConfigMinimal :: S2nTlsFfi -> IO Config
+newConfigMinimal ffi = mask_ $ do
     result <- s2n_config_new_minimal ffi
     case result of
         Left err -> fromFfiError ffi err >>= throwIO
@@ -94,8 +93,8 @@ newConfigMinimal ffi = liftIO $ mask_ $ do
 {- | Create a new certificate chain and key pair.
 The returned value is automatically freed when garbage collected.
 -}
-newCertChainAndKey :: (MonadIO m) => S2nTlsFfi -> m CertChainAndKey
-newCertChainAndKey ffi = liftIO $ mask_ $ do
+newCertChainAndKey :: S2nTlsFfi -> IO CertChainAndKey
+newCertChainAndKey ffi = mask_ $ do
     result <- s2n_cert_chain_and_key_new ffi
     case result of
         Left err -> fromFfiError ffi err >>= throwIO
@@ -108,154 +107,137 @@ newCertChainAndKey ffi = liftIO $ mask_ $ do
 
 -- | Load a certificate chain and private key from PEM data.
 loadCertChainAndKeyPem ::
-    (MonadIO m) =>
     S2nTlsFfi ->
     -- | Certificate chain PEM data
     ByteString ->
     -- | Private key PEM data
     ByteString ->
-    m CertChainAndKey
+    IO CertChainAndKey
 loadCertChainAndKeyPem ffi certPem keyPem = do
     certKey <- newCertChainAndKey ffi
     void $
-        liftIO $
-            withForeignPtr certKey $ \certKeyPtr ->
-                BS.unsafeUseAsCStringLen certPem $ \(certPtr, certLen) ->
-                    BS.unsafeUseAsCStringLen keyPem $ \(keyPtr, keyLen) ->
-                        s2n_cert_chain_and_key_load_pem_bytes
-                            ffi
-                            certKeyPtr
-                            (castPtr certPtr)
-                            (fromIntegral certLen)
-                            (castPtr keyPtr)
-                            (fromIntegral keyLen)
-                            >>= fromFfiEither ffi
+        withForeignPtr certKey $ \certKeyPtr ->
+            BS.unsafeUseAsCStringLen certPem $ \(certPtr, certLen) ->
+                BS.unsafeUseAsCStringLen keyPem $ \(keyPtr, keyLen) ->
+                    s2n_cert_chain_and_key_load_pem_bytes
+                        ffi
+                        certKeyPtr
+                        (castPtr certPtr)
+                        (fromIntegral certLen)
+                        (castPtr keyPtr)
+                        (fromIntegral keyLen)
+                        >>= fromFfiEither ffi
     pure certKey
 
 -- | Add a certificate chain and key to a configuration's store.
 addCertChainAndKeyToStore ::
-    (MonadIO m) =>
     S2nTlsFfi ->
     Config ->
     CertChainAndKey ->
-    m ()
-addCertChainAndKeyToStore ffi config certKey =
-    liftIO $ do
-        void $ withForeignPtr (configPtr config) $ \cPtr ->
-            withForeignPtr certKey $
-                s2n_config_add_cert_chain_and_key_to_store ffi cPtr >=> fromFfiEither ffi
-        -- Keep the cert key alive by storing a reference
-        modifyIORef' (configCertKeys config) (certKey :)
+    IO ()
+addCertChainAndKeyToStore ffi config certKey = do
+    void $ withForeignPtr (configPtr config) $ \cPtr ->
+        withForeignPtr certKey $
+            s2n_config_add_cert_chain_and_key_to_store ffi cPtr >=> fromFfiEither ffi
+    -- Keep the cert key alive by storing a reference
+    modifyIORef' (configCertKeys config) (certKey :)
 
 -- | Set the CA certificate locations for verification.
 setVerificationCaLocation ::
-    (MonadIO m) =>
     S2nTlsFfi ->
     Config ->
     -- | Path to CA certificate file (or Nothing)
     Maybe FilePath ->
     -- | Path to CA certificate directory (or Nothing)
     Maybe FilePath ->
-    m ()
-setVerificationCaLocation ffi config mFile mDir = do
+    IO ()
+setVerificationCaLocation ffi config mFile mDir =
     void $
-        liftIO $
-            withForeignPtr (configPtr config) $ \cPtr ->
-                withMaybeCString mFile $ \filePtr ->
-                    withMaybeCString mDir $
-                        s2n_config_set_verification_ca_location ffi cPtr filePtr >=> fromFfiEither ffi
+        withForeignPtr (configPtr config) $ \cPtr ->
+            withMaybeCString mFile $ \filePtr ->
+                withMaybeCString mDir $
+                    s2n_config_set_verification_ca_location ffi cPtr filePtr >=> fromFfiEither ffi
 
 -- | Add a PEM certificate to the trust store.
 addPemToTrustStore ::
-    (MonadIO m) =>
     S2nTlsFfi ->
     Config ->
     -- | PEM-encoded certificate
     String ->
-    m ()
+    IO ()
 addPemToTrustStore ffi config pem =
     void $
-        liftIO $
-            withForeignPtr (configPtr config) $ \cPtr ->
-                withCString pem $
-                    s2n_config_add_pem_to_trust_store ffi cPtr >=> fromFfiEither ffi
+        withForeignPtr (configPtr config) $ \cPtr ->
+            withCString pem $
+                s2n_config_add_pem_to_trust_store ffi cPtr >=> fromFfiEither ffi
 
 -- | Clear the trust store.
-wipeTrustStore :: (MonadIO m) => S2nTlsFfi -> Config -> m ()
+wipeTrustStore :: S2nTlsFfi -> Config -> IO ()
 wipeTrustStore ffi config =
     void $
-        liftIO $
-            withForeignPtr (configPtr config) $
-                s2n_config_wipe_trust_store ffi >=> fromFfiEither ffi
+        withForeignPtr (configPtr config) $
+            s2n_config_wipe_trust_store ffi >=> fromFfiEither ffi
 
--- | Load ffitem CA certificates into the trust store.
-loadSystemCerts :: (MonadIO m) => S2nTlsFfi -> Config -> m ()
+-- | Load system CA certificates into the trust store.
+loadSystemCerts :: S2nTlsFfi -> Config -> IO ()
 loadSystemCerts ffi config =
     void $
-        liftIO $
-            withForeignPtr (configPtr config) $
-                s2n_config_load_system_certs ffi >=> fromFfiEither ffi
+        withForeignPtr (configPtr config) $
+            s2n_config_load_system_certs ffi >=> fromFfiEither ffi
 
 {- | Set the cipher preferences using a security policy name.
 Common values include "default", "default_tls13", "20170210", etc.
 -}
 setCipherPreferences ::
-    (MonadIO m) =>
     S2nTlsFfi ->
     Config ->
     -- | Security policy name
     String ->
-    m ()
+    IO ()
 setCipherPreferences ffi config policy =
     void $
-        liftIO $
-            withForeignPtr (configPtr config) $ \cPtr ->
-                withCString policy $
-                    s2n_config_set_cipher_preferences ffi cPtr >=> fromFfiEither ffi
+        withForeignPtr (configPtr config) $ \cPtr ->
+            withCString policy $
+                s2n_config_set_cipher_preferences ffi cPtr >=> fromFfiEither ffi
 
 -- | Set the client certificate authentication type.
 setClientAuthType ::
-    (MonadIO m) =>
     S2nTlsFfi ->
     Config ->
     CertAuthType ->
-    m ()
+    IO ()
 setClientAuthType ffi config (CertAuthType authType) =
     void $
-        liftIO $
-            withForeignPtr (configPtr config) $ \cPtr ->
-                s2n_config_set_client_auth_type ffi cPtr authType >>= fromFfiEither ffi
+        withForeignPtr (configPtr config) $ \cPtr ->
+            s2n_config_set_client_auth_type ffi cPtr authType >>= fromFfiEither ffi
 
 {- | Disable X.509 certificate verification.
 WARNING: This is insecure and should only be used for testing.
 -}
-disableX509Verification :: (MonadIO m) => S2nTlsFfi -> Config -> m ()
+disableX509Verification :: S2nTlsFfi -> Config -> IO ()
 disableX509Verification ffi config =
     void $
-        liftIO $
-            withForeignPtr (configPtr config) $
-                s2n_config_disable_x509_verification ffi >=> fromFfiEither ffi
+        withForeignPtr (configPtr config) $
+            s2n_config_disable_x509_verification ffi >=> fromFfiEither ffi
 
 -- | Set the application protocol preferences (ALPN).
 setProtocolPreferences ::
-    (MonadIO m) =>
     S2nTlsFfi ->
     Config ->
     -- | List of protocol names in preference order
     [String] ->
-    m ()
+    IO ()
 setProtocolPreferences ffi config protocols =
     void $
-        liftIO $
-            withForeignPtr (configPtr config) $ \configPtr ->
-                withCStrings protocols $ \protoPtrs ->
-                    withArray protoPtrs $ \protoArray ->
-                        s2n_config_set_protocol_preferences
-                            ffi
-                            configPtr
-                            protoArray
-                            (fromIntegral $ length protocols)
-                            >>= fromFfiEither ffi
+        withForeignPtr (configPtr config) $ \cfgPtr ->
+            withCStrings protocols $ \protoPtrs ->
+                withArray protoPtrs $ \protoArray ->
+                    s2n_config_set_protocol_preferences
+                        ffi
+                        cfgPtr
+                        protoArray
+                        (fromIntegral $ length protocols)
+                        >>= fromFfiEither ffi
 
 -- Helper functions
 

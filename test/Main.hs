@@ -27,16 +27,16 @@ import System.Process (
     terminateProcess,
     waitForProcess,
  )
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
-import UnliftIO (timeout)
 
 main :: IO ()
 main =
     withS2nTls Linked $ \tls ->
         defaultMain (tests tls)
 
-tests :: S2nTls IO -> TestTree
+tests :: S2nTls -> TestTree
 tests tls =
     testGroup
         "s2n-tls"
@@ -57,7 +57,7 @@ getCertPath = do
     pure $ cwd ++ "/test/certs"
 
 -- | Test client mode: connect to openssl s_server
-testClientMode :: S2nTls IO -> IO ()
+testClientMode :: S2nTls -> IO ()
 testClientMode tls = do
     certPath <- getCertPath
     let certFile = certPath ++ "/cert.pem"
@@ -102,7 +102,7 @@ testClientMode tls = do
                 Just _ -> pure ()
 
 -- | Test server mode: accept connection from openssl s_client
-testServerMode :: S2nTls IO -> IO ()
+testServerMode :: S2nTls -> IO ()
 testServerMode tls = do
     certPath <- getCertPath
     let certFile = certPath ++ "/cert.pem"
@@ -165,7 +165,7 @@ testServerMode tls = do
         Net.close clientSock
 
 -- | Loop shutdown until complete
-shutdownLoop :: S2nTls IO -> Connection -> IO ()
+shutdownLoop :: S2nTls -> Connection -> IO ()
 shutdownLoop tls conn = do
     result <- tls.shutdown conn
     case result of

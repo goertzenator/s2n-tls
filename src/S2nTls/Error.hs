@@ -49,8 +49,9 @@ import S2nTls.Ffi.Types (
   pattern S2N_NOT_BLOCKED,
  )
 import S2nTls.Ffi.Types qualified as Ffi
-import UnliftIO (Exception, MonadIO, liftIO, throwIO)
-import UnliftIO.Foreign (Ptr, nullPtr, peek, peekCString)
+import Control.Exception (Exception, throwIO)
+import Foreign (Ptr, nullPtr, peek)
+import Foreign.C.String (peekCString)
 
 -- | Classification of s2n errors.
 data S2nErrorType
@@ -123,12 +124,12 @@ fromFfiBlockedStatus s = case s of
   _ -> Nothing
 
 -- | Convert an FFI-level S2nError to our richer S2nError type.
-fromFfiError :: (MonadIO m) => S2nTlsFfi -> Ffi.S2nError -> m S2nError
+fromFfiError :: S2nTlsFfi -> Ffi.S2nError -> IO S2nError
 fromFfiError ffi ffiErr = do
   let errCode = Ffi.s2nErrorCode ffiErr
-  errTypeRaw <- liftIO $ s2n_error_get_type ffi errCode
+  errTypeRaw <- s2n_error_get_type ffi errCode
   let errType = fromFfiErrorType errTypeRaw
-  msgPtr <- liftIO $ s2n_strerror ffi errCode nullPtr
+  msgPtr <- s2n_strerror ffi errCode nullPtr
   msg <-
     if msgPtr == nullPtr
       then pure "Unknown error"
@@ -144,7 +145,7 @@ fromFfiError ffi ffiErr = do
 {- | Handle an Either result from the FFI library, converting errors and
 throwing them as exceptions.
 -}
-fromFfiEither :: (MonadIO m) => S2nTlsFfi -> Either Ffi.S2nError a -> m a
+fromFfiEither :: S2nTlsFfi -> Either Ffi.S2nError a -> IO a
 fromFfiEither ffi (Left ffiErr) = do
   err <- fromFfiError ffi ffiErr
   throwIO err
@@ -154,19 +155,18 @@ fromFfiEither _ (Right a) = pure a
 if the operation would block, or throwing an exception on other errors.
 Use this for I/O operations like negotiate, send, recv, shutdown.
 -}
-checkReturnWithBlocked :: (MonadIO m) => S2nTlsFfi -> Ptr S2nBlockedStatus -> Either Ffi.S2nError CInt -> m (Either Blocked ())
+checkReturnWithBlocked :: S2nTlsFfi -> Ptr S2nBlockedStatus -> Either Ffi.S2nError CInt -> IO (Either Blocked ())
 checkReturnWithBlocked ffi blockedPtr result = do
-  blockedStatus <- liftIO $ peek blockedPtr
+  blockedStatus <- peek blockedPtr
   case result of
     Right _ -> pure (Right ())
     Left ffiErr -> do
       -- Error type must always be inspected.  Blocked result alone is not sufficient for determining if we are blocked.
-      errTypeRaw <- liftIO (s2n_error_get_type ffi (Ffi.s2nErrorCode ffiErr))
+      errTypeRaw <- s2n_error_get_type ffi (Ffi.s2nErrorCode ffiErr)
       case errTypeRaw of
-        S2N_ERR_T_BLOCKED -> do
+        S2N_ERR_T_BLOCKED ->
           case fromFfiBlockedStatus blockedStatus of
-            Just blocked -> do
-              pure (Left blocked)
+            Just blocked -> pure (Left blocked)
             Nothing -> do
               -- unknown block status, should never happen
               err <- fromFfiError ffi ffiErr

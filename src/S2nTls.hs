@@ -99,127 +99,124 @@ module S2nTls (
     Library (..),
 ) where
 
-import Control.Monad
+import Control.Exception (bracket, throwIO)
 import Data.ByteString (ByteString)
 import Foreign.C.Types (CInt)
 import Network.Socket (Socket)
 import S2nTls.Config qualified as Config
 import S2nTls.Connection qualified as Conn
-import S2nTls.Error (S2nError (..), S2nErrorType (..), fromFfiEither)
+import S2nTls.Error
 import S2nTls.Ffi (Library (..), withS2nTlsFfi)
 import S2nTls.Ffi.Types (S2nTlsFfi (..))
 import S2nTls.Types
-import UnliftIO
 
 {- | A record containing all high-level s2n-tls operations.
 This record is provided by 'withS2nTls' and provides a convenient
 way to access all TLS functionality.
-
-The type parameter @m@ is the monad in which operations run (typically 'IO').
 -}
-data S2nTls m = S2nTls
-    { newConfig :: m Config
+data S2nTls = S2nTls
+    { newConfig :: IO Config
     -- ^ Create a new TLS configuration with default settings.
-    , newConfigMinimal :: m Config
+    , newConfigMinimal :: IO Config
     -- ^ Create a new minimal TLS configuration.
     , loadCertChainAndKeyPem ::
-        -- | Certificate chain PEM
+        -- \| Certificate chain PEM
         ByteString ->
-        -- | Private key PEM
+        -- \| Private key PEM
         ByteString ->
-        m CertChainAndKey
+        IO CertChainAndKey
     -- ^ Load a certificate chain and private key from PEM data.
-    , addCertChainAndKeyToStore :: Config -> CertChainAndKey -> m ()
+    , addCertChainAndKeyToStore :: Config -> CertChainAndKey -> IO ()
     -- ^ Add a certificate chain and key to a configuration's store.
     , setVerificationCaLocation ::
         Config ->
-        -- | CA file path
+        -- \| CA file path
         Maybe FilePath ->
-        -- | CA directory path
+        -- \| CA directory path
         Maybe FilePath ->
-        m ()
+        IO ()
     -- ^ Set the CA certificate locations for verification.
     , addPemToTrustStore ::
         Config ->
-        -- | PEM-encoded certificate
+        -- \| PEM-encoded certificate
         String ->
-        m ()
+        IO ()
     -- ^ Add a PEM certificate to the trust store.
-    , wipeTrustStore :: Config -> m ()
+    , wipeTrustStore :: Config -> IO ()
     -- ^ Clear the trust store.
-    , loadSystemCerts :: Config -> m ()
+    , loadSystemCerts :: Config -> IO ()
     -- ^ Load system CA certificates into the trust store.
     , setCipherPreferences ::
         Config ->
-        -- | Security policy name
+        -- \| Security policy name
         String ->
-        m ()
+        IO ()
     -- ^ Set cipher preferences using a security policy name.
-    , setClientAuthType :: Config -> CertAuthType -> m ()
+    , setClientAuthType :: Config -> CertAuthType -> IO ()
     -- ^ Set client certificate authentication type.
-    , disableX509Verification :: Config -> m ()
+    , disableX509Verification :: Config -> IO ()
     -- ^ Disable X.509 certificate verification (insecure!).
     , setProtocolPreferences ::
         Config ->
-        -- | List of protocol names
+        -- \| List of protocol names
         [String] ->
-        m ()
+        IO ()
     -- ^ Set application protocol preferences (ALPN).
-    , newConnection :: Mode -> m Connection
+    , newConnection :: Mode -> IO Connection
     -- ^ Create a new TLS connection.
-    , setConnectionConfig :: Connection -> Config -> m ()
+    , setConnectionConfig :: Connection -> Config -> IO ()
     -- ^ Set the configuration for a connection.
-    , setFd :: Connection -> CInt -> m ()
+    , setFd :: Connection -> CInt -> IO ()
     -- ^ Set both read and write file descriptors.
-    , setReadFd :: Connection -> CInt -> m ()
+    , setReadFd :: Connection -> CInt -> IO ()
     -- ^ Set the read file descriptor.
-    , setWriteFd :: Connection -> CInt -> m ()
+    , setWriteFd :: Connection -> CInt -> IO ()
     -- ^ Set the write file descriptor.
-    , setSocket :: Connection -> Socket -> m ()
+    , setSocket :: Connection -> Socket -> IO ()
     -- ^ Set a socket, storing the reference and extracting the file descriptor.
-    , setServerName :: Connection -> String -> m ()
+    , setServerName :: Connection -> String -> IO ()
     -- ^ Set the server name for SNI.
-    , getServerName :: Connection -> m (Maybe String)
+    , getServerName :: Connection -> IO (Maybe String)
     -- ^ Get the server name from the connection.
-    , negotiate :: Connection -> m (Either Blocked ())
+    , negotiate :: Connection -> IO (Either Blocked ())
     -- ^ Perform the TLS handshake (non-blocking).
-    , blockingNegotiate :: Connection -> m ()
+    , blockingNegotiate :: Connection -> IO ()
     -- ^ Perform the TLS handshake (blocking).
-    , send :: Connection -> ByteString -> m (Either Blocked Int)
+    , send :: Connection -> ByteString -> IO (Either Blocked Int)
     -- ^ Send data over the TLS connection (non-blocking).
-    , blockingSend :: Connection -> ByteString -> m Int
+    , blockingSend :: Connection -> ByteString -> IO Int
     -- ^ Send data over the TLS connection (blocking).
-    , blockingSendAll :: Connection -> ByteString -> m ()
+    , blockingSendAll :: Connection -> ByteString -> IO ()
     -- ^ Send all data over the TLS connection (blocking, loops until complete).
     , recv ::
         Connection ->
-        -- | Maximum bytes to receive
+        -- \| Maximum bytes to receive
         Int ->
-        m (Either Blocked ByteString)
+        IO (Either Blocked ByteString)
     -- ^ Receive data from the TLS connection (non-blocking).
     , blockingRecv ::
         Connection ->
-        -- | Maximum bytes to receive
+        -- \| Maximum bytes to receive
         Int ->
-        m ByteString
+        IO ByteString
     -- ^ Receive data from the TLS connection (blocking).
-    , shutdown :: Connection -> m (Either Blocked ())
+    , shutdown :: Connection -> IO (Either Blocked ())
     -- ^ Shutdown the TLS connection (bidirectional).
-    , shutdownSend :: Connection -> m (Either Blocked ())
+    , shutdownSend :: Connection -> IO (Either Blocked ())
     -- ^ Shutdown only the send side.
-    , getApplicationProtocol :: Connection -> m (Maybe String)
+    , getApplicationProtocol :: Connection -> IO (Maybe String)
     -- ^ Get the negotiated application protocol (ALPN).
-    , getActualProtocolVersion :: Connection -> m TlsVersion
+    , getActualProtocolVersion :: Connection -> IO TlsVersion
     -- ^ Get the actual negotiated TLS protocol version.
-    , getCipher :: Connection -> m String
+    , getCipher :: Connection -> IO String
     -- ^ Get the negotiated cipher suite name.
-    , isSessionResumed :: Connection -> m Bool
+    , isSessionResumed :: Connection -> IO Bool
     -- ^ Check if this is a resumed session.
-    , wipeConnection :: Connection -> m ()
+    , wipeConnection :: Connection -> IO ()
     -- ^ Wipe the connection for reuse.
-    , freeHandshake :: Connection -> m ()
+    , freeHandshake :: Connection -> IO ()
     -- ^ Free handshake-related memory.
-    , releaseBuffers :: Connection -> m ()
+    , releaseBuffers :: Connection -> IO ()
     -- ^ Release all buffers.
     }
 
@@ -229,6 +226,10 @@ This handles library loading, setup, and cleanup automatically.
 The s2n-tls library must be initialized before any other s2n functions
 are called, and cleaned up when done. This function ensures proper
 initialization and cleanup.
+
+Note: This function tolerates @S2N_ERR_INITIALIZED@ errors from @s2n_init()@,
+since @s2n_cleanup()@ does not clear the internal initialization flag.
+This allows multiple uses of @withS2nTls@ within the same process.
 
 Example:
 
@@ -240,20 +241,37 @@ main = withS2nTls Linked $ \\tls -> do
     -- ... use the TLS API ...
 @
 -}
-withS2nTls :: (MonadUnliftIO m) => Library -> (S2nTls m -> m a) -> m a
-withS2nTls lib action = withRunInIO $ \runInIO ->
+withS2nTls :: Library -> (S2nTls -> IO a) -> IO a
+withS2nTls lib action =
     withS2nTlsFfi lib $ \ffi ->
-        runInIO $
-            bracket
-                ( do
-                    void $ liftIO $ s2n_init ffi >>= fromFfiEither ffi
-                    pure $ mkS2nTls ffi
-                )
-                (\_ -> liftIO $ s2n_cleanup ffi)
-                action
+        bracket
+            (initS2n ffi >> pure (mkS2nTls ffi))
+            (\_ -> s2n_cleanup ffi)
+            action
+
+{- | Initialize s2n-tls, tolerating the "already initialized" error.
+s2n_cleanup() doesn't clear the initialization flag, so subsequent
+calls to s2n_init() will return an error. This is safe to ignore
+since the library is already ready to use.
+
+We check for usage/internal error types with "initialized" in the message
+rather than specific error codes, since error codes are not ABI stable.
+-}
+initS2n :: S2nTlsFfi -> IO ()
+initS2n ffi = do
+    result <- s2n_init ffi
+    case result of
+        Right _ -> pure ()
+        Left ffiErr -> do
+            err <- fromFfiError ffi ffiErr
+            case err of
+                -- Accept "already initialized" errors.
+                -- Match is bit janky, but we have no other way.  Detail error codes are not ABI-stable so we can't use them.
+                S2nError{s2nErrorType = ErrorInternal, s2nErrorMessage = "s2n is initialized"} -> pure ()
+                _ -> throwIO err
 
 -- | Create the S2nTls record from the low-level FFI bindings.
-mkS2nTls :: (MonadIO m) => S2nTlsFfi -> S2nTls m
+mkS2nTls :: S2nTlsFfi -> S2nTls
 mkS2nTls ffi =
     S2nTls
         { newConfig = Config.newConfig ffi
