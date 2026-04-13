@@ -46,6 +46,9 @@ module S2nTls.Connection (
     getCipher,
     isSessionResumed,
 
+    -- * Session Resumption
+    setSession,
+
     -- * Connection Management
     wipeConnection,
     freeHandshake,
@@ -325,6 +328,20 @@ isSessionResumed ffi conn = do
         withForeignPtr (connPtr conn) $
             s2n_connection_is_session_resumed ffi >=> fromFfiEither ffi
     pure (val /= 0)
+
+{- | Set session data for resumption.
+
+This should be called before 'negotiate' on a client connection to attempt
+session resumption. The session data should be the ticket data received via
+the 'SessionTicketCallback' from a previous connection to the same server.
+-}
+setSession :: S2nTlsFfi -> Connection -> ByteString -> IO ()
+setSession ffi conn sessionData =
+    void $
+        withForeignPtr (connPtr conn) $ \cPtr ->
+            BS.unsafeUseAsCStringLen sessionData $ \(ptr, len) ->
+                s2n_connection_set_session ffi cPtr (castPtr ptr) (fromIntegral len)
+                    >>= fromFfiEither ffi
 
 {- | Wipe the connection for reuse.
 This clears all connection state except the configuration.

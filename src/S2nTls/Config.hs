@@ -28,20 +28,34 @@ module S2nTls.Config (
 
     -- * Protocol Settings
     setProtocolPreferences,
+
+    -- * Session Tickets
+    setSessionTicketsOnOff,
+    addTicketCryptoKey,
+    setTicketDecryptKeyLifetime,
+    setTicketEncryptDecryptKeyLifetime,
+    setSessionTicketCallback,
 ) where
 
-import Control.Exception (mask_, throwIO)
+import Control.Exception (SomeException, mask_, throwIO, try)
 import Control.Monad
 import Data.ByteString (ByteString)
+import Data.ByteString.Internal qualified as BSI
 import Data.ByteString.Unsafe qualified as BS
 import Data.IORef (modifyIORef', newIORef)
-import Foreign (Ptr, castPtr, nullPtr, withArray, withForeignPtr)
+import Data.Maybe (fromMaybe)
+import Data.Word (Word32, Word64)
+import Foreign (Ptr, alloca, castPtr, mallocForeignPtrBytes, nullPtr, peek, withArray, withForeignPtr)
 import Foreign.C.String (CString, withCString)
+import Foreign.C.Types (CInt (..))
 import Foreign.Concurrent qualified as FC
 import S2nTls.Error (fromFfiEither, fromFfiError)
 import S2nTls.Ffi.Types (
     S2nCertChainAndKey,
     S2nConfig,
+    S2nConnection,
+    S2nSessionTicket,
+    S2nSessionTicketFn,
     S2nTlsFfi (..),
  )
 import S2nTls.Types (CertAuthType (..), CertChainAndKey, Config (..))
@@ -249,3 +263,143 @@ withMaybeCString (Just s) f = withCString s f
 withCStrings :: [String] -> ([CString] -> IO a) -> IO a
 withCStrings [] f = f []
 withCStrings (s : ss) f = withCString s $ \p -> withCStrings ss $ \ps -> f (p : ps)
+
+-- Session Tickets
+
+{- | Enable or disable session tickets.
+
+For servers, this enables sending session tickets to clients.
+For clients, this enables receiving and storing session tickets.
+-}
+setSessionTicketsOnOff :: S2nTlsFfi -> Config -> Bool -> IO ()
+setSessionTicketsOnOff ffi config enabled =
+    void $
+        withForeignPtr (configPtr config) $ \cPtr ->
+            s2n_config_set_session_tickets_onoff ffi cPtr (if enabled then 1 else 0)
+                >>= fromFfiEither ffi
+
+{- | Add an encryption key for session tickets.
+
+This is the only function that may safely mutate a Config after it has been
+assigned to a Connection.
+
+The key name should be a unique identifier for this key (used for key rotation).
+The key should be 32 bytes of cryptographically random data.
+
+The introduction time specifies when this key becomes valid:
+- @Nothing@: The key is valid immediately (start time = 0, meaning now)
+- @Just time@: The key becomes valid at the specified Unix epoch time (seconds)
+-}
+addTicketCryptoKey ::
+    S2nTlsFfi ->
+    Config ->
+    -- | Key name (unique identifier for key rotation)
+    ByteString ->
+    -- | Key data (should be 32 random bytes)
+    ByteString ->
+    -- | Introduction time (@Nothing@ = now)
+    Maybe Word64 ->
+    IO ()
+addTicketCryptoKey ffi config keyName key introTime =
+    void $
+        withForeignPtr (configPtr config) $ \cPtr ->
+            BS.unsafeUseAsCStringLen keyName $ \(namePtr, nameLen) ->
+                BS.unsafeUseAsCStringLen key $ \(keyPtr, keyLen) ->
+                    s2n_config_add_ticket_crypto_key
+                        ffi
+                        cPtr
+                        (castPtr namePtr)
+                        (fromIntegral nameLen)
+                        (castPtr keyPtr)
+                        (fromIntegral keyLen)
+                        (fromMaybe 0 introTime)
+                        >>= fromFfiEither ffi
+
+{- | Set the lifetime (in seconds) for which a session ticket key can be used
+for decryption only (after it can no longer encrypt).
+
+This allows for graceful key rotation by continuing to accept tickets encrypted
+with an older key while new tickets use a newer key.
+-}
+setTicketDecryptKeyLifetime :: S2nTlsFfi -> Config -> Word64 -> IO ()
+setTicketDecryptKeyLifetime ffi config lifetime =
+    void $
+        withForeignPtr (configPtr config) $ \cPtr ->
+            s2n_config_set_ticket_decrypt_key_lifetime ffi cPtr lifetime
+                >>= fromFfiEither ffi
+
+{- | Set the lifetime (in seconds) for which a session ticket key can be used
+for both encryption and decryption.
+
+After this time, the key will only be used for decryption (for the duration
+set by 'setTicketDecryptKeyLifetime').
+-}
+setTicketEncryptDecryptKeyLifetime :: S2nTlsFfi -> Config -> Word64 -> IO ()
+setTicketEncryptDecryptKeyLifetime ffi config lifetime =
+    void $
+        withForeignPtr (configPtr config) $ \cPtr ->
+            s2n_config_set_ticket_encrypt_decrypt_key_lifetime ffi cPtr lifetime
+                >>= fromFfiEither ffi
+
+{- | Set a callback to receive session tickets from the server.
+
+This is used by clients to store session tickets for later resumption.
+The callback receives the session ticket data (as a 'ByteString') and
+the ticket lifetime in seconds. The callback should store this data and
+return 'True'. The stored data can later be passed to
+'S2nTls.Connection.setSession' to resume the session.
+-}
+setSessionTicketCallback ::
+    S2nTlsFfi ->
+    Config ->
+    -- | Callback that receives ticket data and lifetime
+    (ByteString -> Word32 -> IO ()) ->
+    IO ()
+setSessionTicketCallback ffi config callback = do
+    funPtr <- wrapSessionTicketCallback $ \_connPtr _ctx ticketPtr -> do
+        -- Get the ticket data length
+        ticketLen <- getSessionTicketDataLen ffi ticketPtr
+        -- Get the ticket data
+        ticketData <- getSessionTicketData ffi ticketPtr ticketLen
+        -- Get the ticket lifetime
+        lifetime <- getSessionTicketLifetime ffi ticketPtr
+        -- Call the user callback
+        result <- try @SomeException (callback ticketData lifetime)
+        case result of
+            Left _e -> pure (-1)
+            Right () -> pure 0
+    void $
+        withForeignPtr (configPtr config) $ \cPtr ->
+            s2n_config_set_session_ticket_cb ffi cPtr funPtr nullPtr
+                >>= fromFfiEither ffi
+
+-- | FFI wrapper for creating a session ticket callback FunPtr
+foreign import ccall "wrapper"
+    wrapSessionTicketCallback ::
+        (Ptr S2nConnection -> Ptr () -> Ptr S2nSessionTicket -> IO CInt) ->
+        IO S2nSessionTicketFn
+
+-- | Get the length of session ticket data
+getSessionTicketDataLen :: S2nTlsFfi -> Ptr S2nSessionTicket -> IO Int
+getSessionTicketDataLen ffi ticketPtr =
+    alloca $ \lenPtr -> do
+        void $ s2n_session_ticket_get_data_len ffi ticketPtr lenPtr >>= fromFfiEither ffi
+        len <- peek lenPtr
+        pure (fromIntegral len)
+
+-- | Get session ticket data
+getSessionTicketData :: S2nTlsFfi -> Ptr S2nSessionTicket -> Int -> IO ByteString
+getSessionTicketData ffi ticketPtr len = do
+    fptr <- mallocForeignPtrBytes len
+    withForeignPtr fptr $ \bufPtr -> do
+        void $
+            s2n_session_ticket_get_data ffi ticketPtr (fromIntegral len) (castPtr bufPtr)
+                >>= fromFfiEither ffi
+    pure (BSI.fromForeignPtr fptr 0 len)
+
+-- | Get session ticket lifetime
+getSessionTicketLifetime :: S2nTlsFfi -> Ptr S2nSessionTicket -> IO Word32
+getSessionTicketLifetime ffi ticketPtr =
+    alloca $ \lifetimePtr -> do
+        void $ s2n_session_ticket_get_lifetime ffi ticketPtr lifetimePtr >>= fromFfiEither ffi
+        peek lifetimePtr

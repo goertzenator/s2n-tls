@@ -101,6 +101,7 @@ module S2nTls (
 
 import Control.Exception (bracket, throwIO)
 import Data.ByteString (ByteString)
+import Data.Word (Word32, Word64)
 import Foreign.C.Types (CInt)
 import Network.Socket (Socket)
 import S2nTls.Config qualified as Config
@@ -212,6 +213,31 @@ data S2nTls = S2nTls
     -- ^ Get the negotiated cipher suite name.
     , isSessionResumed :: Connection -> IO Bool
     -- ^ Check if this is a resumed session.
+    , setSession :: Connection -> ByteString -> IO ()
+    -- ^ Set session data for resumption (call before negotiate).
+    , setSessionTicketsOnOff :: Config -> Bool -> IO ()
+    -- ^ Enable or disable session tickets.
+    , addTicketCryptoKey ::
+        Config ->
+        -- \| Key name
+        ByteString ->
+        -- \| Key data (32 random bytes)
+        ByteString ->
+        -- \| Introduction time (Nothing = now)
+        Maybe Word64 ->
+        IO ()
+    -- ^ Add a session ticket encryption key. This is the only function that may
+    -- safely mutate a Config after it has been assigned to a Connection.
+    , setTicketDecryptKeyLifetime :: Config -> Word64 -> IO ()
+    -- ^ Set decrypt-only key lifetime in seconds.
+    , setTicketEncryptDecryptKeyLifetime :: Config -> Word64 -> IO ()
+    -- ^ Set encrypt+decrypt key lifetime in seconds.
+    , setSessionTicketCallback ::
+        Config ->
+        -- \| Callback receives ticket data and lifetime
+        (ByteString -> Word32 -> IO ()) ->
+        IO ()
+    -- ^ Set callback to receive session tickets (client-side).
     , wipeConnection :: Connection -> IO ()
     -- ^ Wipe the connection for reuse.
     , freeHandshake :: Connection -> IO ()
@@ -307,6 +333,12 @@ mkS2nTls ffi =
         , getActualProtocolVersion = Conn.getActualProtocolVersion ffi
         , getCipher = Conn.getCipher ffi
         , isSessionResumed = Conn.isSessionResumed ffi
+        , setSession = Conn.setSession ffi
+        , setSessionTicketsOnOff = Config.setSessionTicketsOnOff ffi
+        , addTicketCryptoKey = Config.addTicketCryptoKey ffi
+        , setTicketDecryptKeyLifetime = Config.setTicketDecryptKeyLifetime ffi
+        , setTicketEncryptDecryptKeyLifetime = Config.setTicketEncryptDecryptKeyLifetime ffi
+        , setSessionTicketCallback = Config.setSessionTicketCallback ffi
         , wipeConnection = Conn.wipeConnection ffi
         , freeHandshake = Conn.freeHandshake ffi
         , releaseBuffers = Conn.releaseBuffers ffi

@@ -11,9 +11,11 @@ Tests for s2n-tls bindings using OpenSSL s_server and s_client.
 module Main (main) where
 
 import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (bracket)
 import Control.Monad (void)
 import Data.ByteString qualified as BS
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Network.Socket qualified as Net
 import S2nTls
 import System.Directory (getCurrentDirectory)
@@ -47,6 +49,10 @@ tests tls =
         , testGroup
             "Server Mode"
             [ testCase "accept from openssl s_client and exchange data" (testServerMode tls)
+            ]
+        , testGroup
+            "Session Tickets"
+            [ testCase "session resumption with tickets" (testSessionTickets tls)
             ]
         ]
 
@@ -163,6 +169,123 @@ testServerMode tls = do
 
         -- Cleanup
         Net.close clientSock
+
+-- | Test session ticket resumption using s2n client and server
+testSessionTickets :: S2nTls -> IO ()
+testSessionTickets tls = do
+    certPath <- getCertPath
+    let certFile = certPath ++ "/cert.pem"
+        keyFile = certPath ++ "/key.pem"
+
+    -- Read cert and key
+    certPem <- BS.readFile certFile
+    keyPem <- BS.readFile keyFile
+
+    -- Generate a ticket encryption key (32 random bytes - using deterministic for test)
+    let ticketKey = BS.pack [1 .. 32]
+        ticketKeyName = "test-key-1"
+
+    -- IORef to store the session ticket from the first connection
+    ticketRef <- newIORef Nothing
+
+    -- Find a free port
+    port <- findFreePort
+
+    -- Create server config with session tickets enabled
+    serverConfig <- tls.newConfig
+    tls.setCipherPreferences serverConfig "default_tls13"
+    certKey <- tls.loadCertChainAndKeyPem certPem keyPem
+    tls.addCertChainAndKeyToStore serverConfig certKey
+    tls.setSessionTicketsOnOff serverConfig True
+    tls.addTicketCryptoKey serverConfig ticketKeyName ticketKey Nothing
+
+    -- Create client config with session ticket callback
+    clientConfig <- tls.newConfig
+    tls.disableX509Verification clientConfig
+    tls.setCipherPreferences clientConfig "default_tls13"
+    tls.setSessionTicketsOnOff clientConfig True
+    tls.setSessionTicketCallback clientConfig $ \ticketData _lifetime -> do
+        writeIORef ticketRef (Just ticketData)
+
+    -- Create server socket
+    bracket (createServerSocket port) Net.close $ \serverSock -> do
+        -- MVar to signal when server is ready for next connection
+        serverReady <- newEmptyMVar
+
+        -- Run server in background thread
+        _ <- forkIO $ do
+            -- First connection
+            putMVar serverReady ()
+            (clientSock1, _) <- Net.accept serverSock
+            serverConn1 <- tls.newConnection Server
+            tls.setConnectionConfig serverConn1 serverConfig
+            tls.setSocket serverConn1 clientSock1
+            tls.blockingNegotiate serverConn1
+            received1 <- tls.blockingRecv serverConn1 1024
+            tls.blockingSendAll serverConn1 received1
+            Net.close clientSock1
+
+            -- Second connection
+            putMVar serverReady ()
+            (clientSock2, _) <- Net.accept serverSock
+            serverConn2 <- tls.newConnection Server
+            tls.setConnectionConfig serverConn2 serverConfig
+            tls.setSocket serverConn2 clientSock2
+            tls.blockingNegotiate serverConn2
+            received2 <- tls.blockingRecv serverConn2 1024
+            tls.blockingSendAll serverConn2 received2
+            Net.close clientSock2
+
+        -- First client connection - establish and get ticket
+        takeMVar serverReady
+        threadDelay 100000 -- 100ms
+        bracket (connectToServer "127.0.0.1" port) Net.close $ \sock1 -> do
+            clientConn1 <- tls.newConnection Client
+            tls.setConnectionConfig clientConn1 clientConfig
+            tls.setServerName clientConn1 "localhost"
+            tls.setSocket clientConn1 sock1
+            tls.blockingNegotiate clientConn1
+
+            -- First connection should NOT be resumed
+            resumed1 <- tls.isSessionResumed clientConn1
+            assertBool "First connection should not be resumed" (not resumed1)
+
+            -- Exchange some data
+            tls.blockingSendAll clientConn1 "ping"
+            response1 <- tls.blockingRecv clientConn1 1024
+            assertEqual "Should receive echo" "ping" response1
+
+        -- Wait for ticket to be received (callback may be async)
+        threadDelay 200000 -- 200ms
+
+        -- Verify we got a ticket
+        mTicket <- readIORef ticketRef
+        assertBool "Should have received a session ticket" (mTicket /= Nothing)
+
+        -- Second client connection - use the ticket
+        takeMVar serverReady
+        threadDelay 100000 -- 100ms
+        bracket (connectToServer "127.0.0.1" port) Net.close $ \sock2 -> do
+            clientConn2 <- tls.newConnection Client
+            tls.setConnectionConfig clientConn2 clientConfig
+            tls.setServerName clientConn2 "localhost"
+
+            -- Set the session ticket for resumption
+            case mTicket of
+                Just ticket -> tls.setSession clientConn2 ticket
+                Nothing -> error "No ticket available"
+
+            tls.setSocket clientConn2 sock2
+            tls.blockingNegotiate clientConn2
+
+            -- Second connection SHOULD be resumed
+            resumed2 <- tls.isSessionResumed clientConn2
+            assertBool "Second connection should be resumed" resumed2
+
+            -- Exchange some data to confirm connection works
+            tls.blockingSendAll clientConn2 "pong"
+            response2 <- tls.blockingRecv clientConn2 1024
+            assertEqual "Should receive echo" "pong" response2
 
 -- | Loop shutdown until complete
 shutdownLoop :: S2nTls -> Connection -> IO ()
