@@ -35,6 +35,7 @@ import Control.Monad
 import Data.ByteString (ByteString)
 import Data.ByteString.Unsafe qualified as BS
 import Data.IORef (modifyIORef', newIORef)
+import Foreign (Ptr, castPtr, nullPtr, withArray, withForeignPtr)
 import Foreign.C.String (CString, withCString)
 import Foreign.Concurrent qualified as FC
 import S2nTls.Error (fromFfiEither, fromFfiError)
@@ -44,7 +45,6 @@ import S2nTls.Ffi.Types (
     S2nTlsFfi (..),
  )
 import S2nTls.Types (CertAuthType (..), CertChainAndKey, Config (..))
-import Foreign (Ptr, castPtr, nullPtr, withArray, withForeignPtr)
 
 {- | Create a new TLS configuration with default settings.
 The returned 'Config' is automatically freed when garbage collected.
@@ -186,7 +186,8 @@ loadSystemCerts ffi config =
             s2n_config_load_system_certs ffi >=> fromFfiEither ffi
 
 {- | Set the cipher preferences using a security policy name.
-Common values include "default", "default_tls13", "20170210", etc.
+Common values include "default", "default_fips", "default_tls13",
+"rfc9151", "20170210", etc.
 -}
 setCipherPreferences ::
     S2nTlsFfi ->

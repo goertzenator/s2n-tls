@@ -61,6 +61,9 @@ import Data.ByteString.Internal qualified as BSI
 import Data.ByteString.Unsafe qualified as BS
 import Data.Foldable
 import Data.IORef (newIORef, readIORef, writeIORef)
+import Foreign hiding (void)
+import Foreign.C.String (peekCString, withCString)
+import Foreign.C.Types (CInt)
 import Foreign.Concurrent qualified as FC
 import Network.Socket qualified as Net
 import S2nTls.Error (Blocked (..), checkReturnWithBlocked, fromFfiEither, fromFfiError)
@@ -73,19 +76,23 @@ import S2nTls.Ffi.Types (
     pattern S2N_BLOCKED_ON_READ,
     pattern S2N_BLOCKED_ON_WRITE,
     pattern S2N_NOT_BLOCKED,
+    pattern S2N_SELF_SERVICE_BLINDING,
  )
 import S2nTls.Types (Config (..), Connection (..), Mode (..), TlsVersion (..))
 import System.Posix.Types (Fd (..))
-import Foreign hiding (void)
-import Foreign.C.Types (CInt)
-import Foreign.C.String (peekCString, withCString)
 
 {- | Create a new TLS connection.
 The returned 'Connection' is automatically freed when garbage collected.
+Disable built in blinding because it can cause significant
+blocking on the order of 10 sec. Blinding mitigates Lucky13
+timing attacks on CBC ciphers. TLS 1.3 no longer has CBC
+ciphers.  See s2n documentation regarding self-service blinding
+if you require it.
 -}
 newConnection :: S2nTlsFfi -> Mode -> IO Connection
 newConnection ffi (Mode mode) = mask_ $ do
     result <- s2n_connection_new ffi mode
+
     case result of
         Left err -> fromFfiError ffi err >>= throwIO
         Right ptr -> do
@@ -102,6 +109,11 @@ newConnection ffi (Mode mode) = mask_ $ do
                     readIORef configRef >>= traverse_ touchForeignPtr
                     readIORef certKeysRef >>= traverse_ touchForeignPtr
             fptr <- FC.newForeignPtr ptr (finalize ptr)
+
+            void $
+                s2n_connection_set_blinding ffi ptr S2N_SELF_SERVICE_BLINDING
+                    >>= fromFfiEither ffi
+
             pure
                 Connection
                     { connPtr = fptr
