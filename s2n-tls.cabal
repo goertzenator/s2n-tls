@@ -7,7 +7,7 @@ description:
   providing memory-safe ForeignPtr wrappers and Haskell-idiomatic
   error handling.
 
-license:       BSD-3-Clause
+license:       Apache-2.0
 license-file:  LICENSE
 author:        Daniel Goertzen
 maintainer:    daniel.goertzen@gmail.com

@@ -1,9 +1,13 @@
 {-# LANGUAGE PatternSynonyms #-}
 
--- \|
+-- |
 -- Module      : S2nTls
 -- Description : High-level Haskell bindings to s2n-tls
--- License     : BSD-3-Clause
+-- Copyright   : (c) 2026 Daniel Goertzen
+-- License     : Apache-2.0
+-- Maintainer  : daniel.goertzen@gmail.com
+-- Stability   : experimental
+-- Portability : non-portable (requires s2n-tls C library)
 --
 -- This module provides safe, high-level Haskell bindings to the s2n-tls library.
 -- It wraps the low-level FFI bindings from "S2nTls.Ffi" with:
