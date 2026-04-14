@@ -107,8 +107,13 @@ newConnection ffi (Mode mode) = mask_ $ do
             let
                 finalize :: Ptr S2nConnection -> IO ()
                 finalize p = do
-                    -- ensure all related resources are kept alive until after s2n_connection_free is called
-                    void $ keepAlive (configRef, certKeysRef, socketRef) $ do
+                    -- Read contents of IORefs - we need to keep the actual
+                    -- ForeignPtrs/Socket alive, not just the IORefs themselves
+                    cfg <- readIORef configRef
+                    certs <- readIORef certKeysRef
+                    sock <- readIORef socketRef
+                    -- Keep contents alive during s2n_connection_free
+                    void $ keepAlive (cfg, certs, sock) $ do
                         s2n_connection_free ffi p
 
             fptr <- FC.newForeignPtr ptr (finalize ptr)

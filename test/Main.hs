@@ -11,8 +11,10 @@ Tests for s2n-tls bindings using OpenSSL s_server and s_client.
 module Main (main) where
 
 import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.Async (forConcurrently_)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (bracket)
+import Control.Exception (SomeException, bracket)
+import Control.Exception qualified
 import Control.Monad (replicateM_, void)
 import Data.ByteString qualified as BS
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
@@ -33,6 +35,8 @@ import System.Process (
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
+import Test.Tasty.QuickCheck (testProperty)
+import Test.QuickCheck (Gen, Property, choose, forAll, ioProperty, vectorOf)
 
 main :: IO ()
 main =
@@ -59,6 +63,11 @@ tests tls =
             "GC Stress"
             [ testCase "session ticket callback survives GC" (testSessionTicketCallbackGC tls)
             , testCase "connection finalizer ordering" (testConnectionFinalizerOrdering tls)
+            , testCase "heavy concurrent stress" (testHeavyConcurrentStress tls)
+            ]
+        , testGroup
+            "QuickCheck"
+            [ testProperty "bidirectional conversation" (propBidirectionalConversation tls)
             ]
         ]
 
@@ -429,6 +438,44 @@ testConnectionFinalizerOrdering tls = do
     -- If we get here without segfault, the test passed
     assertBool "Survived connection/config finalization" True
 
+{- | Heavy concurrent stress test.
+Creates many configs and connections concurrently with aggressive GC.
+This may trigger profiling-related crashes.
+-}
+testHeavyConcurrentStress :: S2nTls -> IO ()
+testHeavyConcurrentStress tls = do
+    certPath <- getCertPath
+    let certFile = certPath ++ "/cert.pem"
+        keyFile = certPath ++ "/key.pem"
+
+    certPem <- BS.readFile certFile
+    keyPem <- BS.readFile keyFile
+
+    -- Run many iterations with concurrent threads
+    replicateM_ 10 $ do
+        -- Create 8 concurrent threads, each creating configs and connections
+        forConcurrently_ [1 .. 8 :: Int] $ \_ -> do
+            replicateM_ 10 $ do
+                -- Create config
+                config <- tls.newConfig
+                tls.setCipherPreferences config "default_tls13"
+                certKey <- tls.loadCertChainAndKeyPem certPem keyPem
+                tls.addCertChainAndKeyToStore config certKey
+
+                -- Create connections
+                replicateM_ 5 $ do
+                    conn <- tls.newConnection Server
+                    tls.setConnectionConfig conn config
+                    performGC
+
+                performGC
+
+        -- Force major GC between rounds
+        performGC
+        performGC
+
+    assertBool "Survived heavy concurrent stress" True
+
 -- | Loop shutdown until complete
 shutdownLoop :: S2nTls -> Connection -> IO ()
 shutdownLoop tls conn = do
@@ -502,3 +549,137 @@ stopProcess ph = do
 -- | Stop a client process (from createProcess tuple)
 stopClientProcess :: (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle) -> IO ()
 stopClientProcess (_, _, _, ph) = stopProcess ph
+
+-- | Generate a random message (non-empty ByteString of printable ASCII)
+genMessage :: Gen BS.ByteString
+genMessage = do
+    len <- choose (1, 1000)
+    bytes <- vectorOf len (choose (32, 126)) -- printable ASCII
+    pure $ BS.pack (map fromIntegral (bytes :: [Int]))
+
+-- | Generate a conversation: list of (direction, message) pairs
+-- direction: True = client sends, False = server sends
+genConversation :: Gen [(Bool, BS.ByteString)]
+genConversation = do
+    numExchanges <- choose (10 :: Int, 50)
+    sequence [genExchange | _ <- [1..numExchanges]]
+  where
+    genExchange = do
+        direction <- choose (False, True)
+        msg <- genMessage
+        pure (direction, msg)
+
+{- | QuickCheck property: bidirectional conversation with GC stress.
+This test creates a client-server pair and exchanges many random messages
+in both directions, with periodic GC to stress finalizers.
+-}
+propBidirectionalConversation :: S2nTls -> Property
+propBidirectionalConversation tls = forAll genConversation $ \conversation ->
+    ioProperty $ do
+        certPath <- getCertPath
+        let certFile = certPath ++ "/cert.pem"
+            keyFile = certPath ++ "/key.pem"
+
+        certPem <- BS.readFile certFile
+        keyPem <- BS.readFile keyFile
+
+        port <- findFreePort
+
+        -- Create server config
+        serverConfig <- tls.newConfig
+        tls.setCipherPreferences serverConfig "default_tls13"
+        certKey <- tls.loadCertChainAndKeyPem certPem keyPem
+        tls.addCertChainAndKeyToStore serverConfig certKey
+
+        -- Create client config
+        clientConfig <- tls.newConfig
+        tls.disableX509Verification clientConfig
+        tls.setCipherPreferences clientConfig "default_tls13"
+
+        -- Track received messages for verification
+        serverReceivedRef <- newIORef []
+        clientReceivedRef <- newIORef []
+        errorRef <- newIORef Nothing
+
+        bracket (createServerSocket port) Net.close $ \serverSock -> do
+            serverReady <- newEmptyMVar
+            serverDone <- newEmptyMVar
+
+            -- Server thread
+            _ <- forkIO $ do
+                putMVar serverReady ()
+                (clientSock, _) <- Net.accept serverSock
+                serverConn <- tls.newConnection Server
+                tls.setConnectionConfig serverConn serverConfig
+                tls.setSocket serverConn clientSock
+
+                tls.blockingNegotiate serverConn
+
+                -- Process conversation from server's perspective
+                let serverLoop [] = pure ()
+                    serverLoop ((isClientSend, msg) : rest) = do
+                        performGC -- Stress GC during conversation
+                        if isClientSend
+                            then do
+                                -- Server receives
+                                received <- tls.blockingRecv serverConn (BS.length msg + 100)
+                                modifyIORef' serverReceivedRef (received :)
+                                serverLoop rest
+                            else do
+                                -- Server sends
+                                tls.blockingSendAll serverConn msg
+                                serverLoop rest
+
+                serverLoop conversation `Control.Exception.catch` \(e :: SomeException) ->
+                    writeIORef errorRef (Just $ "Server error: " ++ show e)
+
+                Net.close clientSock
+                putMVar serverDone ()
+
+            -- Client
+            takeMVar serverReady
+            threadDelay 50000
+
+            bracket (connectToServer "127.0.0.1" port) Net.close $ \sock -> do
+                clientConn <- tls.newConnection Client
+                tls.setConnectionConfig clientConn clientConfig
+                tls.setServerName clientConn "localhost"
+                tls.setSocket clientConn sock
+
+                tls.blockingNegotiate clientConn
+
+                -- Process conversation from client's perspective
+                let clientLoop [] = pure ()
+                    clientLoop ((isClientSend, msg) : rest) = do
+                        performGC -- Stress GC during conversation
+                        if isClientSend
+                            then do
+                                -- Client sends
+                                tls.blockingSendAll clientConn msg
+                                clientLoop rest
+                            else do
+                                -- Client receives
+                                received <- tls.blockingRecv clientConn (BS.length msg + 100)
+                                modifyIORef' clientReceivedRef (received :)
+                                clientLoop rest
+
+                clientLoop conversation `Control.Exception.catch` \(e :: SomeException) ->
+                    writeIORef errorRef (Just $ "Client error: " ++ show e)
+
+            takeMVar serverDone
+            performGC
+
+            -- Check for errors
+            mErr <- readIORef errorRef
+            case mErr of
+                Just err -> error err
+                Nothing -> do
+                    -- Verify messages match
+                    serverReceived <- reverse <$> readIORef serverReceivedRef
+                    clientReceived <- reverse <$> readIORef clientReceivedRef
+
+                    let expectedServerReceived = [msg | (True, msg) <- conversation]
+                        expectedClientReceived = [msg | (False, msg) <- conversation]
+
+                    pure $ serverReceived == expectedServerReceived
+                        && clientReceived == expectedClientReceived

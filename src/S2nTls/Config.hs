@@ -43,15 +43,13 @@ import Control.Monad.Primitive
 import Data.ByteString (ByteString)
 import Data.ByteString.Internal qualified as BSI
 import Data.ByteString.Unsafe qualified as BS
-import Data.Foldable (traverse_)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Maybe (fromMaybe)
 import Data.Word (Word32, Word64)
-import Foreign (Ptr, alloca, castPtr, mallocForeignPtrBytes, nullPtr, peek, touchForeignPtr, withArray, withForeignPtr)
+import Foreign (Ptr, alloca, castPtr, mallocForeignPtrBytes, nullPtr, peek, withArray, withForeignPtr)
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types (CInt (..))
 import Foreign.Concurrent qualified as FC
-import Foreign.Ptr (FunPtr)
 import S2nTls.Error (fromFfiEither, fromFfiError)
 import S2nTls.Ffi.Types (
     S2nCertChainAndKey,
@@ -76,8 +74,12 @@ newConfig ffi = mask_ $ do
             let
                 finalize :: IO ()
                 finalize = do
-                    -- ensure all related resources are kept alive until after s2n_config_free is called
-                    void $ keepAlive (certKeysRef, sessionTicketCbRef) $ do
+                    -- Read contents of IORefs - we need to keep the actual
+                    -- ForeignPtrs/FunPtr alive, not just the IORefs themselves
+                    certs <- readIORef certKeysRef
+                    cb <- readIORef sessionTicketCbRef
+                    -- Keep contents alive during s2n_config_free
+                    void $ keepAlive (certs, cb) $ do
                         s2n_config_free ffi ptr
 
             fptr <- FC.newForeignPtr ptr finalize
@@ -102,12 +104,13 @@ newConfigMinimal ffi = mask_ $ do
             let
                 finalize :: IO ()
                 finalize = do
-                    _ <- s2n_config_free ffi ptr
-                    -- Touch stored items to keep them alive during s2n_config_free
-                    readIORef certKeysRef >>= traverse_ touchForeignPtr
-                    readIORef sessionTicketCbRef >>= traverse_ touchFunPtr
-                touchFunPtr :: FunPtr a -> IO ()
-                touchFunPtr !_ = pure ()
+                    -- Read contents of IORefs - we need to keep the actual
+                    -- ForeignPtrs/FunPtr alive, not just the IORefs themselves
+                    certs <- readIORef certKeysRef
+                    cb <- readIORef sessionTicketCbRef
+                    -- Keep contents alive during s2n_config_free
+                    void $ keepAlive (certs, cb) $ do
+                        s2n_config_free ffi ptr
             fptr <- FC.newForeignPtr ptr finalize
             pure
                 Config
