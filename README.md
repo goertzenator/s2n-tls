@@ -9,14 +9,6 @@ This package provides safe, idiomatic Haskell bindings to the s2n-tls library wi
 - **Automatic memory management** using `ForeignPtr` for all opaque types
 - **Haskell-idiomatic error handling** with exceptions for truly exceptional errors and `Either` for expected conditions like non-blocking I/O
 
-## Installation
-
-This package requires the s2n-tls C library to be installed on your system.
-
-```bash
-cabal build
-```
-
 ## Quick Start
 
 ```haskell
@@ -24,7 +16,7 @@ cabal build
 {-# LANGUAGE OverloadedStrings #-}
 
 import Control.Exception (bracket)
-import Network.Socket qualified as Net
+import Network.Socket
 import S2nTls
 
 main :: IO ()
@@ -33,7 +25,7 @@ main = withS2nTls Linked $ \tls -> do
     tls.loadSystemCerts config
     tls.setCipherPreferences config "default_tls13"
 
-    bracket (connectToServer "example.com" 443) Net.close $ \sock -> do
+    bracket (connectToServer "example.com" 443) close $ \sock -> do
         conn <- tls.newConnection Client
         tls.setConnectionConfig conn config
         tls.setServerName conn "example.com"
@@ -44,21 +36,6 @@ main = withS2nTls Linked $ \tls -> do
         response <- tls.blockingRecv conn 4096
         print response
 ```
-
-## Documentation
-
-Build local Haddock documentation with:
-
-```bash
-cabal haddock
-```
-
-The generated docs include:
-
-- Complete client and server examples
-- Session ticket configuration and resumption
-- Memory locking (mlock) limits and workarounds
-- Error handling patterns
 
 ## Running Tests
 
