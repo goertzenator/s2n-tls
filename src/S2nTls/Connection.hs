@@ -58,11 +58,11 @@ module S2nTls.Connection (
 import Control.Concurrent (threadWaitRead, threadWaitWrite)
 import Control.Exception (mask_, throwIO)
 import Control.Monad (void, (>=>))
+import Control.Monad.Primitive
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Internal qualified as BSI
 import Data.ByteString.Unsafe qualified as BS
-import Data.Foldable
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Foreign hiding (void)
 import Foreign.C.String (peekCString, withCString)
@@ -107,10 +107,10 @@ newConnection ffi (Mode mode) = mask_ $ do
             let
                 finalize :: Ptr S2nConnection -> IO ()
                 finalize p = do
-                    _ <- s2n_connection_free ffi p
-                    -- assure all related resources are kept alive until the connection is fully freed
-                    readIORef configRef >>= traverse_ touchForeignPtr
-                    readIORef certKeysRef >>= traverse_ touchForeignPtr
+                    -- ensure all related resources are kept alive until after s2n_connection_free is called
+                    void $ keepAlive (configRef, certKeysRef, socketRef) $ do
+                        s2n_connection_free ffi p
+
             fptr <- FC.newForeignPtr ptr (finalize ptr)
 
             void $
@@ -129,7 +129,7 @@ newConnection ffi (Mode mode) = mask_ $ do
 
 -- | Set the configuration for a connection.
 setConnectionConfig :: S2nTlsFfi -> Connection -> Config -> IO ()
-setConnectionConfig ffi conn config = do
+setConnectionConfig ffi conn config = mask_ $ do
     void $ withForeignPtr (connPtr conn) $ \cPtr ->
         withForeignPtr (configPtr config) $
             s2n_connection_set_config ffi cPtr >=> fromFfiEither ffi
@@ -138,7 +138,7 @@ setConnectionConfig ffi conn config = do
 
 -- | Set both read and write file descriptors for the connection.
 setFd :: S2nTlsFfi -> Connection -> CInt -> IO ()
-setFd ffi conn fd = do
+setFd ffi conn fd = mask_ $ do
     void $ withForeignPtr (connPtr conn) $ \cPtr ->
         s2n_connection_set_fd ffi cPtr fd >>= fromFfiEither ffi
     writeIORef (connReadFd conn) (Just fd)
@@ -146,14 +146,14 @@ setFd ffi conn fd = do
 
 -- | Set the read file descriptor for the connection.
 setReadFd :: S2nTlsFfi -> Connection -> CInt -> IO ()
-setReadFd ffi conn fd = do
+setReadFd ffi conn fd = mask_ $ do
     void $ withForeignPtr (connPtr conn) $ \cPtr ->
         s2n_connection_set_read_fd ffi cPtr fd >>= fromFfiEither ffi
     writeIORef (connReadFd conn) (Just fd)
 
 -- | Set the write file descriptor for the connection.
 setWriteFd :: S2nTlsFfi -> Connection -> CInt -> IO ()
-setWriteFd ffi conn fd = do
+setWriteFd ffi conn fd = mask_ $ do
     void $ withForeignPtr (connPtr conn) $ \cPtr ->
         s2n_connection_set_write_fd ffi cPtr fd >>= fromFfiEither ffi
     writeIORef (connWriteFd conn) (Just fd)
@@ -163,7 +163,7 @@ This stores the socket reference to prevent it from being garbage collected,
 extracts the file descriptor, and sets it on the connection.
 -}
 setSocket :: S2nTlsFfi -> Connection -> Net.Socket -> IO ()
-setSocket ffi conn sock = do
+setSocket ffi conn sock = mask_ $ do
     writeIORef (connSocket conn) (Just sock)
     fd <- Net.unsafeFdSocket sock
     void $ withForeignPtr (connPtr conn) $ \cPtr ->

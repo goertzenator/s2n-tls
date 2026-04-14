@@ -13,13 +13,14 @@ module Main (main) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (bracket)
-import Control.Monad (void)
+import Control.Monad (replicateM_, void)
 import Data.ByteString qualified as BS
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Network.Socket qualified as Net
 import S2nTls
 import System.Directory (getCurrentDirectory)
 import System.IO (Handle, hFlush, hGetLine, hPutStrLn)
+import System.Mem (performGC)
 import System.Process (
     CreateProcess (..),
     ProcessHandle,
@@ -53,6 +54,11 @@ tests tls =
         , testGroup
             "Session Tickets"
             [ testCase "session resumption with tickets" (testSessionTickets tls)
+            ]
+        , testGroup
+            "GC Stress"
+            [ testCase "session ticket callback survives GC" (testSessionTicketCallbackGC tls)
+            , testCase "connection finalizer ordering" (testConnectionFinalizerOrdering tls)
             ]
         ]
 
@@ -286,6 +292,142 @@ testSessionTickets tls = do
             tls.blockingSendAll clientConn2 "pong"
             response2 <- tls.blockingRecv clientConn2 1024
             assertEqual "Should receive echo" "pong" response2
+
+{- | Test that session ticket callbacks survive garbage collection.
+This test exercises the FunPtr lifetime bug where the callback would be
+freed by GC while C still holds a reference to it, causing a segfault.
+-}
+testSessionTicketCallbackGC :: S2nTls -> IO ()
+testSessionTicketCallbackGC tls = do
+    certPath <- getCertPath
+    let certFile = certPath ++ "/cert.pem"
+        keyFile = certPath ++ "/key.pem"
+
+    -- Read cert and key
+    certPem <- BS.readFile certFile
+    keyPem <- BS.readFile keyFile
+
+    -- Generate a ticket encryption key
+    let ticketKey = BS.pack [1 .. 32]
+        ticketKeyName = "test-key-gc"
+
+    -- Track callback invocations
+    callbackCountRef <- newIORef (0 :: Int)
+
+    -- Find a free port
+    port <- findFreePort
+
+    -- Create server config with session tickets enabled
+    serverConfig <- tls.newConfig
+    tls.setCipherPreferences serverConfig "default_tls13"
+    certKey <- tls.loadCertChainAndKeyPem certPem keyPem
+    tls.addCertChainAndKeyToStore serverConfig certKey
+    tls.setSessionTicketsOnOff serverConfig True
+    tls.addTicketCryptoKey serverConfig ticketKeyName ticketKey Nothing
+
+    -- Create client config with session ticket callback
+    clientConfig <- tls.newConfig
+    tls.disableX509Verification clientConfig
+    tls.setCipherPreferences clientConfig "default_tls13"
+    tls.setSessionTicketsOnOff clientConfig True
+    tls.setSessionTicketCallback clientConfig $ \_ticketData _lifetime -> do
+        -- Force GC inside the callback to stress test FunPtr lifetime
+        performGC
+        modifyIORef' callbackCountRef (+ 1)
+
+    -- Force GC after setting up callback to try to collect the FunPtr
+    performGC
+    performGC
+
+    -- Create server socket
+    bracket (createServerSocket port) Net.close $ \serverSock -> do
+        serverReady <- newEmptyMVar
+
+        -- Run server in background
+        _ <- forkIO $ do
+            -- Perform multiple connections to stress test GC
+            replicateM_ 3 $ do
+                putMVar serverReady ()
+                (clientSock, _) <- Net.accept serverSock
+                serverConn <- tls.newConnection Server
+                tls.setConnectionConfig serverConn serverConfig
+                tls.setSocket serverConn clientSock
+                tls.blockingNegotiate serverConn
+                _ <- tls.blockingRecv serverConn 1024
+                tls.blockingSendAll serverConn "ok"
+                -- Force GC on server side too
+                performGC
+                Net.close clientSock
+
+        -- Make multiple connections, forcing GC between each
+        replicateM_ 3 $ do
+            takeMVar serverReady
+            threadDelay 100000
+
+            -- Force GC before connecting
+            performGC
+
+            bracket (connectToServer "127.0.0.1" port) Net.close $ \sock -> do
+                clientConn <- tls.newConnection Client
+                tls.setConnectionConfig clientConn clientConfig
+                tls.setServerName clientConn "localhost"
+                tls.setSocket clientConn sock
+                tls.blockingNegotiate clientConn
+                tls.blockingSendAll clientConn "test"
+                _ <- tls.blockingRecv clientConn 1024
+
+                -- Force GC while connection is active
+                performGC
+                performGC
+
+            -- Force GC after connection is closed
+            performGC
+
+        -- Wait a bit for callbacks to fire
+        threadDelay 300000
+        performGC
+
+        -- Verify callbacks were invoked (if we got here without segfault, test passed)
+        callbackCount <- readIORef callbackCountRef
+        assertBool
+            ("Session ticket callbacks should have been invoked, got " ++ show callbackCount)
+            (callbackCount > 0)
+
+{- | Test that connection finalizers properly keep config alive during cleanup.
+This exercises the bug where touchForeignPtr was called AFTER s2n_connection_free,
+causing use-after-free when the config was finalized before the connection.
+-}
+testConnectionFinalizerOrdering :: S2nTls -> IO ()
+testConnectionFinalizerOrdering tls = do
+    certPath <- getCertPath
+    let certFile = certPath ++ "/cert.pem"
+        keyFile = certPath ++ "/key.pem"
+
+    certPem <- BS.readFile certFile
+    keyPem <- BS.readFile keyFile
+
+    -- Create many short-lived connections with shared config
+    -- to stress the finalizer ordering
+    replicateM_ 50 $ do
+        -- Create config (will be finalized when this iteration ends)
+        config <- tls.newConfig
+        tls.setCipherPreferences config "default_tls13"
+        certKey <- tls.loadCertChainAndKeyPem certPem keyPem
+        tls.addCertChainAndKeyToStore config certKey
+
+        -- Create connections that reference the config
+        replicateM_ 5 $ do
+            conn <- tls.newConnection Server
+            tls.setConnectionConfig conn config
+            -- Let connection go out of scope
+            performGC
+
+        -- Force GC to finalize connections while config might also be finalizing
+        performGC
+        performGC
+
+    -- If we get here without segfault, the test passed
+    assertBool "Survived connection/config finalization" True
 
 -- | Loop shutdown until complete
 shutdownLoop :: S2nTls -> Connection -> IO ()

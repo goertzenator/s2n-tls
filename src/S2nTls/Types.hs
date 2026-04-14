@@ -46,6 +46,7 @@ import S2nTls.Ffi.Types (
   S2nConfig,
   S2nConnection,
   S2nMode,
+  S2nSessionTicketFn,
   pattern S2N_CERT_AUTH_NONE,
   pattern S2N_CERT_AUTH_OPTIONAL,
   pattern S2N_CERT_AUTH_REQUIRED,
@@ -63,6 +64,8 @@ data Config = Config
   -- ^ The underlying s2n config pointer
   , configCertKeys :: !(IORef [CertChainAndKey])
   -- ^ Certificate chain and key pairs added to this config
+  , configSessionTicketCb :: !(IORef (Maybe S2nSessionTicketFn))
+  -- ^ Session ticket callback FunPtr (kept alive to prevent GC)
   }
 
 instance Show Config where

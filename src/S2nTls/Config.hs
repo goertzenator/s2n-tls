@@ -39,20 +39,22 @@ module S2nTls.Config (
 
 import Control.Exception (SomeException, mask_, throwIO, try)
 import Control.Monad
+import Control.Monad.Primitive
 import Data.ByteString (ByteString)
 import Data.ByteString.Internal qualified as BSI
 import Data.ByteString.Unsafe qualified as BS
-import Data.IORef (modifyIORef', newIORef)
+import Data.Foldable (traverse_)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Maybe (fromMaybe)
 import Data.Word (Word32, Word64)
-import Foreign (Ptr, alloca, castPtr, mallocForeignPtrBytes, nullPtr, peek, withArray, withForeignPtr)
+import Foreign (Ptr, alloca, castPtr, mallocForeignPtrBytes, nullPtr, peek, touchForeignPtr, withArray, withForeignPtr)
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types (CInt (..))
 import Foreign.Concurrent qualified as FC
+import Foreign.Ptr (FunPtr)
 import S2nTls.Error (fromFfiEither, fromFfiError)
 import S2nTls.Ffi.Types (
     S2nCertChainAndKey,
-    S2nConfig,
     S2nConnection,
     S2nSessionTicket,
     S2nSessionTicketFn,
@@ -69,18 +71,22 @@ newConfig ffi = mask_ $ do
     case result of
         Left err -> fromFfiError ffi err >>= throwIO
         Right ptr -> do
-            fptr <- FC.newForeignPtr ptr (finalize ptr)
             certKeysRef <- newIORef []
+            sessionTicketCbRef <- newIORef Nothing
+            let
+                finalize :: IO ()
+                finalize = do
+                    -- ensure all related resources are kept alive until after s2n_config_free is called
+                    void $ keepAlive (certKeysRef, sessionTicketCbRef) $ do
+                        s2n_config_free ffi ptr
+
+            fptr <- FC.newForeignPtr ptr finalize
             pure
                 Config
                     { configPtr = fptr
                     , configCertKeys = certKeysRef
+                    , configSessionTicketCb = sessionTicketCbRef
                     }
-  where
-    finalize :: Ptr S2nConfig -> IO ()
-    finalize p = do
-        _ <- s2n_config_free ffi p
-        pure ()
 
 {- | Create a new minimal TLS configuration.
 This configuration has fewer default settings than 'newConfig'.
@@ -91,18 +97,24 @@ newConfigMinimal ffi = mask_ $ do
     case result of
         Left err -> fromFfiError ffi err >>= throwIO
         Right ptr -> do
-            fptr <- FC.newForeignPtr ptr (finalize ptr)
             certKeysRef <- newIORef []
+            sessionTicketCbRef <- newIORef Nothing
+            let
+                finalize :: IO ()
+                finalize = do
+                    _ <- s2n_config_free ffi ptr
+                    -- Touch stored items to keep them alive during s2n_config_free
+                    readIORef certKeysRef >>= traverse_ touchForeignPtr
+                    readIORef sessionTicketCbRef >>= traverse_ touchFunPtr
+                touchFunPtr :: FunPtr a -> IO ()
+                touchFunPtr !_ = pure ()
+            fptr <- FC.newForeignPtr ptr finalize
             pure
                 Config
                     { configPtr = fptr
                     , configCertKeys = certKeysRef
+                    , configSessionTicketCb = sessionTicketCbRef
                     }
-  where
-    finalize :: Ptr S2nConfig -> IO ()
-    finalize p = do
-        _ <- s2n_config_free ffi p
-        pure ()
 
 {- | Create a new certificate chain and key pair.
 The returned value is automatically freed when garbage collected.
@@ -372,6 +384,8 @@ setSessionTicketCallback ffi config callback = do
         withForeignPtr (configPtr config) $ \cPtr ->
             s2n_config_set_session_ticket_cb ffi cPtr funPtr nullPtr
                 >>= fromFfiEither ffi
+    -- Keep the FunPtr alive by storing it in the config
+    writeIORef (configSessionTicketCb config) (Just funPtr)
 
 -- | FFI wrapper for creating a session ticket callback FunPtr
 foreign import ccall "wrapper"
