@@ -47,7 +47,13 @@ main = withS2nTls Linked $ \tls -> do
 
 ## Documentation
 
-See the **[Haddock documentation](https://hackage.haskell.org/package/s2n-tls)** for:
+Build local Haddock documentation with:
+
+```bash
+cabal haddock
+```
+
+The generated docs include:
 
 - Complete client and server examples
 - Session ticket configuration and resumption
@@ -62,7 +68,12 @@ Tests may exhaust the default mlock limit. Use:
 S2N_DONT_MLOCK=1 cabal test
 ```
 
-See the [mlock documentation](https://hackage.haskell.org/package/s2n-tls/docs/S2nTls.html#g:7) for details.
+See the mlock section in the Haddock documentation for details on memory locking.
+
+## Related Packages
+
+- [s2n-tls-ffi](https://github.com/goertzenator/s2n-tls-ffi) - Low-level FFI bindings (used internally by this package)
+- [warp-s2n-tls](https://github.com/goertzenator/warp-s2n-tls) - TLS support for Warp using s2n-tls
 
 ## License
 

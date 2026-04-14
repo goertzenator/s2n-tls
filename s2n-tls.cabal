@@ -13,7 +13,16 @@ author:        Daniel Goertzen
 maintainer:    daniel.goertzen@gmail.com
 category:      Network, Cryptography
 build-type:    Simple
-extra-doc-files: CHANGELOG.md
+tested-with:   GHC == 9.8.2
+extra-doc-files:
+    CHANGELOG.md
+    README.md
+homepage:      https://github.com/goertzenator/s2n-tls
+bug-reports:   https://github.com/goertzenator/s2n-tls/issues
+
+source-repository head
+    type:     git
+    location: https://github.com/goertzenator/s2n-tls.git
 
 library
   exposed-modules:
@@ -31,7 +40,7 @@ library
 
   hs-source-dirs:   src
   default-language: GHC2021
-  ghc-options:      -Wall
+  ghc-options:      -Wall -haddock
 
 test-suite s2n-tls-test
   type:             exitcode-stdio-1.0
