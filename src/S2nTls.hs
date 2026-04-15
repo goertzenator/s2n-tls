@@ -437,9 +437,13 @@ data S2nTls = S2nTls
         IO ByteString
     -- ^ Receive data from the TLS connection (blocking).
     , shutdown :: Connection -> IO (Either Blocked ())
-    -- ^ Shutdown the TLS connection (bidirectional).
+    -- ^ Shutdown the TLS connection (bidirectional, non-blocking).
+    , blockingShutdown :: Connection -> IO ()
+    -- ^ Shutdown the TLS connection (bidirectional, blocking).
     , shutdownSend :: Connection -> IO (Either Blocked ())
-    -- ^ Shutdown only the send side.
+    -- ^ Shutdown only the send side (non-blocking).
+    , blockingShutdownSend :: Connection -> IO ()
+    -- ^ Shutdown only the send side (blocking).
     , getApplicationProtocol :: Connection -> IO (Maybe String)
     -- ^ Get the negotiated application protocol (ALPN).
     , getActualProtocolVersion :: Connection -> IO TlsVersion
@@ -563,7 +567,9 @@ mkS2nTls ffi =
         , recv = Conn.recv ffi
         , blockingRecv = Conn.blockingRecv ffi
         , shutdown = Conn.shutdown ffi
+        , blockingShutdown = Conn.blockingShutdown ffi
         , shutdownSend = Conn.shutdownSend ffi
+        , blockingShutdownSend = Conn.blockingShutdownSend ffi
         , getApplicationProtocol = Conn.getApplicationProtocol ffi
         , getActualProtocolVersion = Conn.getActualProtocolVersion ffi
         , getCipher = Conn.getCipher ffi

@@ -39,6 +39,8 @@ module S2nTls.Connection (
     -- * Connection Shutdown
     shutdown,
     shutdownSend,
+    blockingShutdown,
+    blockingShutdownSend,
 
     -- * Connection Info
     getApplicationProtocol,
@@ -432,6 +434,38 @@ blockingRecv ffi conn maxLen = go
         result <- recv ffi conn maxLen
         case result of
             Right bs -> pure bs
+            Left blocked -> do
+                waitOnBlocked conn blocked
+                go
+
+{- | Shutdown the TLS connection (bidirectional, blocking).
+This function will block (using GHC's I/O manager) until the shutdown
+completes or an error occurs.
+Throws 'S2nError' on protocol errors or other failures.
+-}
+blockingShutdown :: S2nTlsFfi -> Connection -> IO ()
+blockingShutdown ffi conn = go
+  where
+    go = do
+        result <- shutdown ffi conn
+        case result of
+            Right () -> pure ()
+            Left blocked -> do
+                waitOnBlocked conn blocked
+                go
+
+{- | Shutdown only the send side of the TLS connection (blocking).
+This function will block (using GHC's I/O manager) until the shutdown
+completes or an error occurs.
+Throws 'S2nError' on protocol errors or other failures.
+-}
+blockingShutdownSend :: S2nTlsFfi -> Connection -> IO ()
+blockingShutdownSend ffi conn = go
+  where
+    go = do
+        result <- shutdownSend ffi conn
+        case result of
+            Right () -> pure ()
             Left blocked -> do
                 waitOnBlocked conn blocked
                 go
