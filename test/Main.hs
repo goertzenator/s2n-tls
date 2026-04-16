@@ -117,10 +117,10 @@ testClientMode tls = do
             assertEqual "Response should match" (BS.reverse testData <> "\n") response
 
             -- Shutdown
-            result <- timeout 2000000 $ shutdownLoop tls conn
+            result <- timeout 2000000 $ tls.blockingShutdown conn
             case result of
                 Nothing -> pure () -- Timeout is OK, openssl may not send close_notify
-                Just _ -> pure ()
+                Just () -> pure ()
 
 -- | Test server mode: accept connection from openssl s_client
 testServerMode :: S2nTls -> IO ()
@@ -475,20 +475,6 @@ testHeavyConcurrentStress tls = do
         performGC
 
     assertBool "Survived heavy concurrent stress" True
-
--- | Loop shutdown until complete
-shutdownLoop :: S2nTls -> Connection -> IO ()
-shutdownLoop tls conn = do
-    result <- tls.shutdown conn
-    case result of
-        Right () -> pure ()
-        Left BlockedOnRead -> do
-            threadDelay 10000
-            shutdownLoop tls conn
-        Left BlockedOnWrite -> do
-            threadDelay 10000
-            shutdownLoop tls conn
-        Left _ -> pure ()
 
 -- | Find a free port
 findFreePort :: IO Int
