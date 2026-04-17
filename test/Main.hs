@@ -13,8 +13,7 @@ module Main (main) where
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.Async (forConcurrently_)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (SomeException, bracket)
-import Control.Exception qualified
+import Control.Exception
 import Control.Monad (replicateM_, void)
 import Data.ByteString qualified as BS
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
@@ -33,10 +32,10 @@ import System.Process (
     waitForProcess,
  )
 import System.Timeout (timeout)
+import Test.QuickCheck (Gen, Property, choose, forAll, ioProperty, vectorOf)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, testCase)
 import Test.Tasty.QuickCheck (testProperty)
-import Test.QuickCheck (Gen, Property, choose, forAll, ioProperty, vectorOf)
 
 main :: IO ()
 main =
@@ -54,6 +53,7 @@ tests tls =
         , testGroup
             "Server Mode"
             [ testCase "accept from openssl s_client and exchange data" (testServerMode tls)
+            , testCase "server-initiated shutdown" (testServerShutdown tls)
             ]
         , testGroup
             "Session Tickets"
@@ -184,6 +184,104 @@ testServerMode tls = do
 
         -- Cleanup
         Net.close clientSock
+
+{- | Test server-initiated shutdown.
+The server receives data, echoes it back, then performs a clean shutdown.
+This exercises the server-side blockingShutdown path.
+-}
+testServerShutdown :: S2nTls -> IO ()
+testServerShutdown tls = do
+    certPath <- getCertPath
+    let certFile = certPath ++ "/cert.pem"
+        keyFile = certPath ++ "/key.pem"
+
+    certPem <- BS.readFile certFile
+    keyPem <- BS.readFile keyFile
+
+    port <- findFreePort
+
+    -- Create server config
+    serverConfig <- tls.newConfig
+    tls.setCipherPreferences serverConfig "default_tls13"
+    certKey <- tls.loadCertChainAndKeyPem certPem keyPem
+    tls.addCertChainAndKeyToStore serverConfig certKey
+
+    -- Create client config
+    clientConfig <- tls.newConfig
+    tls.disableX509Verification clientConfig
+    tls.setCipherPreferences clientConfig "default_tls13"
+
+    -- Track what client received
+    clientReceivedRef <- newIORef BS.empty
+
+    bracket (createServerSocket port) Net.close $ \serverSock -> do
+        serverReady <- newEmptyMVar
+        serverDone <- newEmptyMVar
+
+        -- Server thread
+        _ <- forkIO $ do
+            putMVar serverReady ()
+            ( do
+                    (clientSock, _) <- Net.accept serverSock
+
+                    serverConn <- tls.newConnection Server
+                    tls.setConnectionConfig serverConn serverConfig
+                    tls.setSocket serverConn clientSock
+
+                    tls.blockingNegotiate serverConn
+
+                    -- Receive data from client
+                    received <- tls.blockingRecv serverConn 1024
+
+                    -- Echo it back
+                    tls.blockingSendAll serverConn received
+
+                    -- Server initiates shutdown
+                    putStrLn "Server initiating shutdown"
+                    tls.blockingShutdown serverConn
+                    putStrLn "Server finishes shutdown"
+
+                    -- Close socket
+                    Net.close clientSock
+                )
+                `finally` ( do
+                                putMVar serverDone ()
+                                putStrLn "Server exiting"
+                          )
+
+        -- Client
+        takeMVar serverReady
+        threadDelay 100000
+
+        bracket (connectToServer "127.0.0.1" port) Net.close $ \sock -> do
+            clientConn <- tls.newConnection Client
+            tls.setConnectionConfig clientConn clientConfig
+            tls.setServerName clientConn "localhost"
+            tls.setSocket clientConn sock
+
+            tls.blockingNegotiate clientConn
+
+            -- Send data
+            let testData = "Hello from client"
+            tls.blockingSendAll clientConn testData
+
+            -- Receive echo
+            received <- tls.blockingRecv clientConn 1024
+            writeIORef clientReceivedRef received
+
+            -- putStrLn "Client initiating shutdown"
+            -- tls.blockingShutdown clientConn
+            -- putStrLn "Client finishes shutdown"
+            -- threadDelay 1_000_000
+            putStrLn "Client exiting"
+
+        putStrLn "awaiting server done"
+        takeMVar serverDone
+        putStrLn "server done"
+
+        -- Verify
+        clientReceived <- readIORef clientReceivedRef
+        assertEqual "Client should receive echo" "Hello from client" clientReceived
 
 -- | Test session ticket resumption using s2n client and server
 testSessionTickets :: S2nTls -> IO ()
@@ -543,12 +641,13 @@ genMessage = do
     bytes <- vectorOf len (choose (32, 126)) -- printable ASCII
     pure $ BS.pack (map fromIntegral (bytes :: [Int]))
 
--- | Generate a conversation: list of (direction, message) pairs
--- direction: True = client sends, False = server sends
+{- | Generate a conversation: list of (direction, message) pairs
+direction: True = client sends, False = server sends
+-}
 genConversation :: Gen [(Bool, BS.ByteString)]
 genConversation = do
     numExchanges <- choose (10 :: Int, 50)
-    sequence [genExchange | _ <- [1..numExchanges]]
+    sequence [genExchange | _ <- [1 .. numExchanges]]
   where
     genExchange = do
         direction <- choose (False, True)
@@ -667,5 +766,6 @@ propBidirectionalConversation tls = forAll genConversation $ \conversation ->
                     let expectedServerReceived = [msg | (True, msg) <- conversation]
                         expectedClientReceived = [msg | (False, msg) <- conversation]
 
-                    pure $ serverReceived == expectedServerReceived
-                        && clientReceived == expectedClientReceived
+                    pure $
+                        serverReceived == expectedServerReceived
+                            && clientReceived == expectedClientReceived

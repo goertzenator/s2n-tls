@@ -104,7 +104,7 @@ newConnection ffi (Mode mode) = mask_ $ do
             readFdRef <- newIORef Nothing
             writeFdRef <- newIORef Nothing
             configRef <- newIORef Nothing
-            certKeysRef <- newIORef []
+            -- certKeysRef <- newIORef []
             socketRef <- newIORef Nothing
             let
                 finalize :: Ptr S2nConnection -> IO ()
@@ -112,10 +112,10 @@ newConnection ffi (Mode mode) = mask_ $ do
                     -- Read contents of IORefs - we need to keep the actual
                     -- ForeignPtrs/Socket alive, not just the IORefs themselves
                     cfg <- readIORef configRef
-                    certs <- readIORef certKeysRef
+                    -- certs <- readIORef certKeysRef
                     sock <- readIORef socketRef
                     -- Keep contents alive during s2n_connection_free
-                    void $ keepAlive (cfg, certs, sock) $ do
+                    void $ keepAlive (cfg, sock) $ do
                         s2n_connection_free ffi p
 
             fptr <- FC.newForeignPtr ptr (finalize ptr)
@@ -130,8 +130,8 @@ newConnection ffi (Mode mode) = mask_ $ do
                     , connReadFd = readFdRef
                     , connWriteFd = writeFdRef
                     , connConfig = configRef
-                    , connCertKeys = certKeysRef
-                    , connSocket = socketRef
+                    , -- , connCertKeys = certKeysRef
+                      connSocket = socketRef
                     }
 
 -- | Set the configuration for a connection.
@@ -451,7 +451,9 @@ blockingShutdown ffi conn = go
         case result of
             Right () -> pure ()
             Left blocked -> do
+                putStrLn $ "blockingShutdown: " <> show blocked
                 waitOnBlocked conn blocked
+                putStrLn "blockingShutdown unblocked"
                 go
 
 {- | Shutdown only the send side of the TLS connection (blocking).

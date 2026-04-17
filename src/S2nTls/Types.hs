@@ -85,7 +85,7 @@ data Connection = Connection
   -- ^ Write file descriptor (set via 'setWriteFd' or 'setFd')
   , connConfig :: !(IORef (Maybe (ForeignPtr S2nConfig)))
   -- ^ The currently assigned config (kept alive to prevent GC)
-  , connCertKeys :: !(IORef [ForeignPtr S2nCertChainAndKey])
+  -- , connCertKeys :: !(IORef [ForeignPtr S2nCertChainAndKey])
   -- ^ Certificate chain and key pairs (kept alive to prevent GC)
   , connSocket :: !(IORef (Maybe Net.Socket))
   -- ^ Socket reference (kept alive to prevent GC)
