@@ -19,7 +19,6 @@ module S2nTls.Types (
   Mode (..),
   pattern Server,
   pattern Client,
-  Blocked (..),
   CertAuthType (..),
   pattern CertAuthNone,
   pattern CertAuthRequired,
@@ -39,7 +38,6 @@ import Data.IORef (IORef)
 import Foreign.C.Types (CInt)
 import Foreign.ForeignPtr (ForeignPtr)
 import Network.Socket qualified as Net
-import S2nTls.Error (Blocked (..))
 import S2nTls.Ffi.Types (
   S2nCertAuthType,
   S2nCertChainAndKey,
@@ -47,11 +45,11 @@ import S2nTls.Ffi.Types (
   S2nConnection,
   S2nMode,
   S2nSessionTicketFn,
-  pattern S2N_CERT_AUTH_NONE,
-  pattern S2N_CERT_AUTH_OPTIONAL,
-  pattern S2N_CERT_AUTH_REQUIRED,
-  pattern S2N_CLIENT,
-  pattern S2N_SERVER,
+  pattern S2nCertAuthNone,
+  pattern S2nCertAuthOptional,
+  pattern S2nCertAuthRequired,
+  pattern S2nClient,
+  pattern S2nServer,
  )
 
 {- | A managed TLS configuration.
@@ -104,10 +102,10 @@ newtype Mode = Mode {unMode :: S2nMode}
   deriving (Eq, Show)
 
 pattern Server :: Mode
-pattern Server = Mode S2N_SERVER
+pattern Server = Mode S2nServer
 
 pattern Client :: Mode
-pattern Client = Mode S2N_CLIENT
+pattern Client = Mode S2nClient
 
 {-# COMPLETE Server, Client #-}
 
@@ -116,13 +114,13 @@ newtype CertAuthType = CertAuthType {unCertAuthType :: S2nCertAuthType}
   deriving (Eq, Show)
 
 pattern CertAuthNone :: CertAuthType
-pattern CertAuthNone = CertAuthType S2N_CERT_AUTH_NONE
+pattern CertAuthNone = CertAuthType S2nCertAuthNone
 
 pattern CertAuthRequired :: CertAuthType
-pattern CertAuthRequired = CertAuthType S2N_CERT_AUTH_REQUIRED
+pattern CertAuthRequired = CertAuthType S2nCertAuthRequired
 
 pattern CertAuthOptional :: CertAuthType
-pattern CertAuthOptional = CertAuthType S2N_CERT_AUTH_OPTIONAL
+pattern CertAuthOptional = CertAuthType S2nCertAuthOptional
 
 {-# COMPLETE CertAuthNone, CertAuthRequired, CertAuthOptional #-}
 

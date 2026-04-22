@@ -50,7 +50,7 @@ import Foreign (Ptr, alloca, castPtr, mallocForeignPtrBytes, nullPtr, peek, with
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types (CInt (..))
 import Foreign.Concurrent qualified as FC
-import S2nTls.Error (fromFfiEither, fromFfiError)
+import S2nTls.Error (fromFfiEither)
 import S2nTls.Ffi.Types (
     S2nCertChainAndKey,
     S2nConnection,
@@ -67,7 +67,7 @@ newConfig :: S2nTlsFfi -> IO Config
 newConfig ffi = mask_ $ do
     result <- s2n_config_new ffi
     case result of
-        Left err -> fromFfiError ffi err >>= throwIO
+        Left err -> throwIO err
         Right ptr -> do
             certKeysRef <- newIORef []
             sessionTicketCbRef <- newIORef Nothing
@@ -97,7 +97,7 @@ newConfigMinimal :: S2nTlsFfi -> IO Config
 newConfigMinimal ffi = mask_ $ do
     result <- s2n_config_new_minimal ffi
     case result of
-        Left err -> fromFfiError ffi err >>= throwIO
+        Left err -> throwIO err
         Right ptr -> do
             certKeysRef <- newIORef []
             sessionTicketCbRef <- newIORef Nothing
@@ -126,7 +126,7 @@ newCertChainAndKey :: S2nTlsFfi -> IO CertChainAndKey
 newCertChainAndKey ffi = mask_ $ do
     result <- s2n_cert_chain_and_key_new ffi
     case result of
-        Left err -> fromFfiError ffi err >>= throwIO
+        Left err -> throwIO err
         Right ptr -> FC.newForeignPtr ptr (finalize ptr)
   where
     finalize :: Ptr S2nCertChainAndKey -> IO ()
@@ -155,7 +155,7 @@ loadCertChainAndKeyPem ffi certPem keyPem = do
                         (fromIntegral certLen)
                         (castPtr keyPtr)
                         (fromIntegral keyLen)
-                        >>= fromFfiEither ffi
+                        >>= fromFfiEither
     pure certKey
 
 -- | Add a certificate chain and key to a configuration's store.
@@ -167,7 +167,7 @@ addCertChainAndKeyToStore ::
 addCertChainAndKeyToStore ffi config certKey = do
     void $ withForeignPtr (configPtr config) $ \cPtr ->
         withForeignPtr certKey $
-            s2n_config_add_cert_chain_and_key_to_store ffi cPtr >=> fromFfiEither ffi
+            s2n_config_add_cert_chain_and_key_to_store ffi cPtr >=> fromFfiEither
     -- Keep the cert key alive by storing a reference
     modifyIORef' (configCertKeys config) (certKey :)
 
@@ -185,7 +185,7 @@ setVerificationCaLocation ffi config mFile mDir =
         withForeignPtr (configPtr config) $ \cPtr ->
             withMaybeCString mFile $ \filePtr ->
                 withMaybeCString mDir $
-                    s2n_config_set_verification_ca_location ffi cPtr filePtr >=> fromFfiEither ffi
+                    s2n_config_set_verification_ca_location ffi cPtr filePtr >=> fromFfiEither
 
 -- | Add a PEM certificate to the trust store.
 addPemToTrustStore ::
@@ -198,21 +198,21 @@ addPemToTrustStore ffi config pem =
     void $
         withForeignPtr (configPtr config) $ \cPtr ->
             withCString pem $
-                s2n_config_add_pem_to_trust_store ffi cPtr >=> fromFfiEither ffi
+                s2n_config_add_pem_to_trust_store ffi cPtr >=> fromFfiEither
 
 -- | Clear the trust store.
 wipeTrustStore :: S2nTlsFfi -> Config -> IO ()
 wipeTrustStore ffi config =
     void $
         withForeignPtr (configPtr config) $
-            s2n_config_wipe_trust_store ffi >=> fromFfiEither ffi
+            s2n_config_wipe_trust_store ffi >=> fromFfiEither
 
 -- | Load system CA certificates into the trust store.
 loadSystemCerts :: S2nTlsFfi -> Config -> IO ()
 loadSystemCerts ffi config =
     void $
         withForeignPtr (configPtr config) $
-            s2n_config_load_system_certs ffi >=> fromFfiEither ffi
+            s2n_config_load_system_certs ffi >=> fromFfiEither
 
 {- | Set the cipher preferences using a security policy name.
 Common values include "default", "default_fips", "default_tls13",
@@ -228,7 +228,7 @@ setCipherPreferences ffi config policy =
     void $
         withForeignPtr (configPtr config) $ \cPtr ->
             withCString policy $
-                s2n_config_set_cipher_preferences ffi cPtr >=> fromFfiEither ffi
+                s2n_config_set_cipher_preferences ffi cPtr >=> fromFfiEither
 
 -- | Set the client certificate authentication type.
 setClientAuthType ::
@@ -239,7 +239,7 @@ setClientAuthType ::
 setClientAuthType ffi config (CertAuthType authType) =
     void $
         withForeignPtr (configPtr config) $ \cPtr ->
-            s2n_config_set_client_auth_type ffi cPtr authType >>= fromFfiEither ffi
+            s2n_config_set_client_auth_type ffi cPtr authType >>= fromFfiEither
 
 {- | Disable X.509 certificate verification.
 WARNING: This is insecure and should only be used for testing.
@@ -248,7 +248,7 @@ disableX509Verification :: S2nTlsFfi -> Config -> IO ()
 disableX509Verification ffi config =
     void $
         withForeignPtr (configPtr config) $
-            s2n_config_disable_x509_verification ffi >=> fromFfiEither ffi
+            s2n_config_disable_x509_verification ffi >=> fromFfiEither
 
 -- | Set the application protocol preferences (ALPN).
 setProtocolPreferences ::
@@ -267,7 +267,7 @@ setProtocolPreferences ffi config protocols =
                         cfgPtr
                         protoArray
                         (fromIntegral $ length protocols)
-                        >>= fromFfiEither ffi
+                        >>= fromFfiEither
 
 -- Helper functions
 
@@ -291,7 +291,7 @@ setSessionTicketsOnOff ffi config enabled =
     void $
         withForeignPtr (configPtr config) $ \cPtr ->
             s2n_config_set_session_tickets_onoff ffi cPtr (if enabled then 1 else 0)
-                >>= fromFfiEither ffi
+                >>= fromFfiEither
 
 {- | Add an encryption key for session tickets.
 
@@ -328,7 +328,7 @@ addTicketCryptoKey ffi config keyName key introTime =
                         (castPtr keyPtr)
                         (fromIntegral keyLen)
                         (fromMaybe 0 introTime)
-                        >>= fromFfiEither ffi
+                        >>= fromFfiEither
 
 {- | Set the lifetime (in seconds) for which a session ticket key can be used
 for decryption only (after it can no longer encrypt).
@@ -341,7 +341,7 @@ setTicketDecryptKeyLifetime ffi config lifetime =
     void $
         withForeignPtr (configPtr config) $ \cPtr ->
             s2n_config_set_ticket_decrypt_key_lifetime ffi cPtr lifetime
-                >>= fromFfiEither ffi
+                >>= fromFfiEither
 
 {- | Set the lifetime (in seconds) for which a session ticket key can be used
 for both encryption and decryption.
@@ -354,7 +354,7 @@ setTicketEncryptDecryptKeyLifetime ffi config lifetime =
     void $
         withForeignPtr (configPtr config) $ \cPtr ->
             s2n_config_set_ticket_encrypt_decrypt_key_lifetime ffi cPtr lifetime
-                >>= fromFfiEither ffi
+                >>= fromFfiEither
 
 {- | Set a callback to receive session tickets from the server.
 
@@ -386,7 +386,7 @@ setSessionTicketCallback ffi config callback = do
     void $
         withForeignPtr (configPtr config) $ \cPtr ->
             s2n_config_set_session_ticket_cb ffi cPtr funPtr nullPtr
-                >>= fromFfiEither ffi
+                >>= fromFfiEither
     -- Keep the FunPtr alive by storing it in the config
     writeIORef (configSessionTicketCb config) (Just funPtr)
 
@@ -400,7 +400,7 @@ foreign import ccall "wrapper"
 getSessionTicketDataLen :: S2nTlsFfi -> Ptr S2nSessionTicket -> IO Int
 getSessionTicketDataLen ffi ticketPtr =
     alloca $ \lenPtr -> do
-        void $ s2n_session_ticket_get_data_len ffi ticketPtr lenPtr >>= fromFfiEither ffi
+        void $ s2n_session_ticket_get_data_len ffi ticketPtr lenPtr >>= fromFfiEither
         len <- peek lenPtr
         pure (fromIntegral len)
 
@@ -411,12 +411,12 @@ getSessionTicketData ffi ticketPtr len = do
     withForeignPtr fptr $ \bufPtr -> do
         void $
             s2n_session_ticket_get_data ffi ticketPtr (fromIntegral len) (castPtr bufPtr)
-                >>= fromFfiEither ffi
+                >>= fromFfiEither
     pure (BSI.fromForeignPtr fptr 0 len)
 
 -- | Get session ticket lifetime
 getSessionTicketLifetime :: S2nTlsFfi -> Ptr S2nSessionTicket -> IO Word32
 getSessionTicketLifetime ffi ticketPtr =
     alloca $ \lifetimePtr -> do
-        void $ s2n_session_ticket_get_lifetime ffi ticketPtr lifetimePtr >>= fromFfiEither ffi
+        void $ s2n_session_ticket_get_lifetime ffi ticketPtr lifetimePtr >>= fromFfiEither
         peek lifetimePtr

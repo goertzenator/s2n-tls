@@ -285,8 +285,8 @@ The library distinguishes between:
 
 2. __Either values__ - Returned for expected conditions:
 
-    * @Left 'BlockedOnRead'@ - Operation would block waiting for data
-    * @Left 'BlockedOnWrite'@ - Operation would block waiting to write
+    * @Left 'S2nBlockedOnRead'@ - Operation would block waiting for data
+    * @Left 'S2nBlockedOnWrite'@ - Operation would block waiting to write
     * @Right result@ - Operation completed successfully
 -}
 module S2nTls (
@@ -324,11 +324,24 @@ module S2nTls (
     pattern CertAuthOptional,
 
     -- ** Blocked Status
-    Blocked (..),
+    S2nBlockedStatus (..),
+    pattern S2nNotBlocked,
+    pattern S2nBlockedOnRead,
+    pattern S2nBlockedOnWrite,
+    pattern S2nBlockedOnApplicationInput,
+    pattern S2nBlockedOnEarlyData,
 
     -- * Errors
     S2nError (..),
     S2nErrorType (..),
+    pattern S2nErrTOk,
+    pattern S2nErrTIo,
+    pattern S2nErrTClosed,
+    pattern S2nErrTBlocked,
+    pattern S2nErrTAlert,
+    pattern S2nErrTProto,
+    pattern S2nErrTInternal,
+    pattern S2nErrTUsage,
 
     -- * Re-exports from s2n-tls-ffi
     Library (..),
@@ -341,7 +354,8 @@ import Foreign.C.Types (CInt)
 import Network.Socket (Socket)
 import S2nTls.Config qualified as Config
 import S2nTls.Connection qualified as Conn
-import S2nTls.Error
+import S2nTls.Error hiding (getErrorMessage, getErrorType)
+import S2nTls.Error qualified as Err
 import S2nTls.Ffi (Library (..), withS2nTlsFfi)
 import S2nTls.Ffi.Types (S2nTlsFfi (..))
 import S2nTls.Types
@@ -414,11 +428,11 @@ data S2nTls = S2nTls
     -- ^ Set the server name for SNI.
     , getServerName :: Connection -> IO (Maybe String)
     -- ^ Get the server name from the connection.
-    , negotiate :: Connection -> IO (Either Blocked ())
+    , negotiate :: Connection -> IO (Either S2nBlockedStatus ())
     -- ^ Perform the TLS handshake (non-blocking).
     , blockingNegotiate :: Connection -> IO ()
     -- ^ Perform the TLS handshake (blocking).
-    , send :: Connection -> ByteString -> IO (Either Blocked Int)
+    , send :: Connection -> ByteString -> IO (Either S2nBlockedStatus Int)
     -- ^ Send data over the TLS connection (non-blocking).
     , blockingSend :: Connection -> ByteString -> IO Int
     -- ^ Send data over the TLS connection (blocking).
@@ -428,7 +442,7 @@ data S2nTls = S2nTls
         Connection ->
         -- \| Maximum bytes to receive
         Int ->
-        IO (Either Blocked ByteString)
+        IO (Either S2nBlockedStatus ByteString)
     -- ^ Receive data from the TLS connection (non-blocking).
     , blockingRecv ::
         Connection ->
@@ -436,11 +450,11 @@ data S2nTls = S2nTls
         Int ->
         IO ByteString
     -- ^ Receive data from the TLS connection (blocking).
-    , shutdown :: Connection -> IO (Either Blocked ())
+    , shutdown :: Connection -> IO (Either S2nBlockedStatus ())
     -- ^ Shutdown the TLS connection (bidirectional, non-blocking).
     , blockingShutdown :: Connection -> IO ()
     -- ^ Shutdown the TLS connection (bidirectional, blocking).
-    , shutdownSend :: Connection -> IO (Either Blocked ())
+    , shutdownSend :: Connection -> IO (Either S2nBlockedStatus ())
     -- ^ Shutdown only the send side (non-blocking).
     , blockingShutdownSend :: Connection -> IO ()
     -- ^ Shutdown only the send side (blocking).
@@ -483,6 +497,10 @@ data S2nTls = S2nTls
     -- ^ Free handshake-related memory.
     , releaseBuffers :: Connection -> IO ()
     -- ^ Release all buffers.
+    , getErrorType :: S2nError -> IO S2nErrorType
+    -- ^ Query the error type classification for an 'S2nError'.
+    , getErrorMessage :: S2nError -> IO String
+    -- ^ Query the human-readable message for an 'S2nError'.
     }
 
 {- | Initialize the s2n-tls library and run an action with a high-level API.
@@ -527,12 +545,13 @@ initS2n ffi = do
     result <- s2n_init ffi
     case result of
         Right _ -> pure ()
-        Left ffiErr -> do
-            err <- fromFfiError ffi ffiErr
-            case err of
+        Left err -> do
+            errType <- Err.getErrorType ffi err
+            errMsg <- Err.getErrorMessage ffi err
+            case (errType, errMsg) of
                 -- Accept "already initialized" errors.
                 -- Match is bit janky, but we have no other way.  Detail error codes are not ABI-stable so we can't use them.
-                S2nError{s2nErrorType = ErrorInternal, s2nErrorMessage = "s2n is initialized"} -> pure ()
+                (S2nErrTInternal, "s2n is initialized") -> pure ()
                 _ -> throwIO err
 
 -- | Create the S2nTls record from the low-level FFI bindings.
@@ -583,4 +602,6 @@ mkS2nTls ffi =
         , wipeConnection = Conn.wipeConnection ffi
         , freeHandshake = Conn.freeHandshake ffi
         , releaseBuffers = Conn.releaseBuffers ffi
+        , getErrorType = Err.getErrorType ffi
+        , getErrorMessage = Err.getErrorMessage ffi
         }
