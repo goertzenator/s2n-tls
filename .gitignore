@@ -39,6 +39,7 @@ tags
 *.iml
 .vscode/
 .vim/
+*.code-workspace
 
 # OS files
 .DS_Store
