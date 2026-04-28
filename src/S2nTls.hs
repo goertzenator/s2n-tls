@@ -13,7 +13,7 @@ This module provides safe, high-level Haskell bindings to the
 <https://github.com/aws/s2n-tls s2n-tls> library. It wraps the low-level
 FFI bindings from "S2nTls.Ffi" with:
 
-* Automatic memory management using 'ForeignPtr'
+* Automatic memory management using 'Foreign.ForeignPtr.ForeignPtr'
 * Haskell-idiomatic error handling with exceptions and 'Either'
 * Library initialization and cleanup via 'withS2nTls'
 
@@ -277,7 +277,7 @@ Tests may exhaust the default mlock limit. Use:
 
 The library distinguishes between:
 
-1. __Exceptions__ ('S2nError') - Thrown for truly exceptional conditions:
+1. __Exceptions__ (t'S2nTls.Ffi.Types.S2nError') - Thrown for truly exceptional conditions:
 
     * Internal library errors
     * Protocol violations
@@ -325,22 +325,35 @@ module S2nTls (
 
     -- ** Blocked Status
     S2nBlockedStatus (..),
+    -- | Operation completed successfully.
     pattern S2nNotBlocked,
+    -- | Blocked waiting for data to read.
     pattern S2nBlockedOnRead,
+    -- | Blocked waiting to write data.
     pattern S2nBlockedOnWrite,
+    -- | Blocked waiting for application input.
     pattern S2nBlockedOnApplicationInput,
+    -- | Blocked on early data processing.
     pattern S2nBlockedOnEarlyData,
 
     -- * Errors
     S2nError (..),
     S2nErrorType (..),
+    -- | No error occurred.
     pattern S2nErrTOk,
+    -- | I\/O error (check errno).
     pattern S2nErrTIo,
+    -- | Connection was closed.
     pattern S2nErrTClosed,
+    -- | Operation blocked (retry needed).
     pattern S2nErrTBlocked,
+    -- | TLS alert received.
     pattern S2nErrTAlert,
+    -- | Protocol error.
     pattern S2nErrTProto,
+    -- | Internal library error.
     pattern S2nErrTInternal,
+    -- | Incorrect API usage.
     pattern S2nErrTUsage,
 
     -- * Re-exports from s2n-tls-ffi
@@ -498,9 +511,9 @@ data S2nTls = S2nTls
     , releaseBuffers :: Connection -> IO ()
     -- ^ Release all buffers.
     , getErrorType :: S2nError -> IO S2nErrorType
-    -- ^ Query the error type classification for an 'S2nError'.
+    -- ^ Query the error type classification for an t'S2nTls.Ffi.Types.S2nError'.
     , getErrorMessage :: S2nError -> IO String
-    -- ^ Query the human-readable message for an 'S2nError'.
+    -- ^ Query the human-readable message for an t'S2nTls.Ffi.Types.S2nError'.
     }
 
 {- | Initialize the s2n-tls library and run an action with a high-level API.

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0.0 -- YYYY-MM-DD
+## 0.1.0.0 -- 2026-04-28
 
 * Initial release
 * Safe ForeignPtr wrappers for s2n-tls opaque types

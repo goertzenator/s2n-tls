@@ -61,7 +61,7 @@ import S2nTls.Ffi.Types (
 import S2nTls.Types (CertAuthType (..), CertChainAndKey, Config (..))
 
 {- | Create a new TLS configuration with default settings.
-The returned 'Config' is automatically freed when garbage collected.
+The returned t'Config' is automatically freed when garbage collected.
 -}
 newConfig :: S2nTlsFfi -> IO Config
 newConfig ffi = mask_ $ do

@@ -7,7 +7,7 @@ License     : BSD-3-Clause
 Maintainer  : daniel.goertzen@gmail.com
 
 Error handling utilities for s2n-tls operations. The core error types
-('S2nError', 'S2nErrorType', 'S2nBlockedStatus') are defined in
+(t'S2nTls.Ffi.Types.S2nError', t'S2nTls.Ffi.Types.S2nErrorType', t'S2nTls.Ffi.Types.S2nBlockedStatus') are defined in
 'S2nTls.Ffi.Types' and re-exported here for convenience. This module
 also provides functions to query error classification and human-readable
 messages.
@@ -16,21 +16,34 @@ module S2nTls.Error (
   -- * Error Types (re-exported from S2nTls.Ffi.Types)
   S2nError (..),
   S2nErrorType (..),
+  -- | No error occurred.
   pattern S2nErrTOk,
+  -- | I\/O error (check errno).
   pattern S2nErrTIo,
+  -- | Connection was closed.
   pattern S2nErrTClosed,
+  -- | Operation blocked (retry needed).
   pattern S2nErrTBlocked,
+  -- | TLS alert received.
   pattern S2nErrTAlert,
+  -- | Protocol error.
   pattern S2nErrTProto,
+  -- | Internal library error.
   pattern S2nErrTInternal,
+  -- | Incorrect API usage.
   pattern S2nErrTUsage,
 
   -- * Blocking Status (re-exported)
   S2nBlockedStatus (..),
+  -- | Operation completed successfully.
   pattern S2nNotBlocked,
+  -- | Blocked waiting for data to read.
   pattern S2nBlockedOnRead,
+  -- | Blocked waiting to write data.
   pattern S2nBlockedOnWrite,
+  -- | Blocked waiting for application input.
   pattern S2nBlockedOnApplicationInput,
+  -- | Blocked on early data processing.
   pattern S2nBlockedOnEarlyData,
 
   -- * Error Query Functions
@@ -65,11 +78,11 @@ import S2nTls.Ffi.Types (
   pattern S2nNotBlocked,
  )
 
--- | Query the error type classification for an 'S2nError' via @s2n_error_get_type@.
+-- | Query the error type classification for an t'S2nTls.Ffi.Types.S2nError' via @s2n_error_get_type@.
 getErrorType :: S2nTlsFfi -> S2nError -> IO S2nErrorType
 getErrorType ffi err = s2n_error_get_type ffi (s2nErrorCode err)
 
--- | Query the human-readable message for an 'S2nError' via @s2n_strerror@.
+-- | Query the human-readable message for an t'S2nTls.Ffi.Types.S2nError' via @s2n_strerror@.
 getErrorMessage :: S2nTlsFfi -> S2nError -> IO String
 getErrorMessage ffi err = do
   msgPtr <- s2n_strerror ffi (s2nErrorCode err) nullPtr
@@ -77,7 +90,7 @@ getErrorMessage ffi err = do
     then pure "Unknown error"
     else peekCString msgPtr
 
--- | Throw the 'S2nError' from an 'Either' result as an exception, returning the success value.
+-- | Throw the t'S2nTls.Ffi.Types.S2nError' from an 'Either' result as an exception, returning the success value.
 fromFfiEither :: Either S2nError a -> IO a
 fromFfiEither (Left err) = throwIO err
 fromFfiEither (Right a) = pure a
