@@ -53,7 +53,7 @@ import S2nTls.Ffi.Types (
  )
 
 {- | A managed TLS configuration.
-Resources are automatically freed when the t'Config' is garbage collected.
+Resources are automatically freed when the 'Config' is garbage collected.
 The Config also holds references to any CertChainAndKey objects added to it
 to prevent them from being garbage collected.
 -}
@@ -70,7 +70,7 @@ instance Show Config where
   show _ = "Config {<opaque>}"
 
 {- | A managed TLS connection.
-Resources are automatically freed when the t'Connection' is garbage collected.
+Resources are automatically freed when the 'Connection' is garbage collected.
 The connection also tracks file descriptors for blocking I/O support,
 and holds references to Config and CertChainAndKey to prevent GC.
 -}

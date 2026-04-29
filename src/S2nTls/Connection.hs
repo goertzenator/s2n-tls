@@ -7,7 +7,7 @@ License     : BSD-3-Clause
 Maintainer  : daniel.goertzen@gmail.com
 
 This module provides functions for creating, configuring, and using
-TLS connections. All I/O operations return @'Either' t'S2nTls.Ffi.Types.S2nBlockedStatus' a@ to handle
+TLS connections. All I/O operations return @'Either' 'S2nBlockedStatus' a@ to handle
 non-blocking scenarios gracefully.
 -}
 module S2nTls.Connection (
@@ -87,7 +87,7 @@ import S2nTls.Types (Config (..), Connection (..), Mode (..), TlsVersion (..))
 import System.Posix.Types (Fd (..))
 
 {- | Create a new TLS connection.
-The returned t'Connection' is automatically freed when garbage collected.
+The returned 'Connection' is automatically freed when garbage collected.
 Disable built in blinding because it can cause significant
 blocking on the order of 10 sec. Blinding mitigates Lucky13
 timing attacks on CBC ciphers. TLS 1.3 no longer has CBC
@@ -205,7 +205,7 @@ getServerName ffi conn =
 {- | Perform the TLS handshake (non-blocking).
 Returns 'Left blocked' if the operation would block on I/O.
 On success, returns 'Right ()'.
-Throws t'S2nTls.Ffi.Types.S2nError' on protocol errors or other failures.
+Throws 'S2nError' on protocol errors or other failures.
 -}
 negotiate :: S2nTlsFfi -> Connection -> IO (Either S2nBlockedStatus ())
 negotiate ffi conn =
@@ -363,7 +363,7 @@ releaseBuffers ffi conn =
 {- | Perform the TLS handshake (blocking).
 This function will block (using GHC's I/O manager) until the handshake
 completes or an error occurs.
-Throws t'S2nTls.Ffi.Types.S2nError' on protocol errors or other failures.
+Throws 'S2nError' on protocol errors or other failures.
 -}
 blockingNegotiate :: S2nTlsFfi -> Connection -> IO ()
 blockingNegotiate ffi conn = go
@@ -426,7 +426,7 @@ blockingRecv ffi conn maxLen = go
 {- | Shutdown the TLS connection (bidirectional, blocking).
 This function will block (using GHC's I/O manager) until the shutdown
 completes or an error occurs.
-Throws t'S2nTls.Ffi.Types.S2nError' on protocol errors or other failures.
+Throws 'S2nError' on protocol errors or other failures.
 -}
 blockingShutdown :: S2nTlsFfi -> Connection -> IO ()
 blockingShutdown ffi conn = go
@@ -444,7 +444,7 @@ blockingShutdown ffi conn = go
 {- | Shutdown only the send side of the TLS connection (blocking).
 This function will block (using GHC's I/O manager) until the shutdown
 completes or an error occurs.
-Throws t'S2nTls.Ffi.Types.S2nError' on protocol errors or other failures.
+Throws 'S2nError' on protocol errors or other failures.
 -}
 blockingShutdownSend :: S2nTlsFfi -> Connection -> IO ()
 blockingShutdownSend ffi conn = go

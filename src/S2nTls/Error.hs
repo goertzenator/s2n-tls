@@ -7,7 +7,7 @@ License     : BSD-3-Clause
 Maintainer  : daniel.goertzen@gmail.com
 
 Error handling utilities for s2n-tls operations. The core error types
-(t'S2nTls.Ffi.Types.S2nError', t'S2nTls.Ffi.Types.S2nErrorType', t'S2nTls.Ffi.Types.S2nBlockedStatus') are defined in
+('S2nError', 'S2nErrorType', 'S2nBlockedStatus') are defined in
 'S2nTls.Ffi.Types' and re-exported here for convenience. This module
 also provides functions to query error classification and human-readable
 messages.
@@ -78,11 +78,11 @@ import S2nTls.Ffi.Types (
   pattern S2nNotBlocked,
  )
 
--- | Query the error type classification for an t'S2nTls.Ffi.Types.S2nError' via @s2n_error_get_type@.
+-- | Query the error type classification for an 'S2nError' via @s2n_error_get_type@.
 getErrorType :: S2nTlsFfi -> S2nError -> IO S2nErrorType
 getErrorType ffi err = s2n_error_get_type ffi (s2nErrorCode err)
 
--- | Query the human-readable message for an t'S2nTls.Ffi.Types.S2nError' via @s2n_strerror@.
+-- | Query the human-readable message for an 'S2nError' via @s2n_strerror@.
 getErrorMessage :: S2nTlsFfi -> S2nError -> IO String
 getErrorMessage ffi err = do
   msgPtr <- s2n_strerror ffi (s2nErrorCode err) nullPtr
@@ -90,7 +90,7 @@ getErrorMessage ffi err = do
     then pure "Unknown error"
     else peekCString msgPtr
 
--- | Throw the t'S2nTls.Ffi.Types.S2nError' from an 'Either' result as an exception, returning the success value.
+-- | Throw the 'S2nError' from an 'Either' result as an exception, returning the success value.
 fromFfiEither :: Either S2nError a -> IO a
 fromFfiEither (Left err) = throwIO err
 fromFfiEither (Right a) = pure a

@@ -121,7 +121,8 @@ can present it on subsequent connections to skip the full handshake.
 
 == Server-Side Setup
 
-Servers must enable tickets and configure encryption keys:
+Servers must enable tickets and configure encryption keys that will encrypt and
+decrypt the tickets:
 
 @
 import System.Entropy (getEntropy)
@@ -148,6 +149,7 @@ setupServerWithTickets tls = do
 __Key rotation__: You can call 'addTicketCryptoKey' even after the config is
 assigned to connections. New connections will use the new key for encryption,
 while old keys remain valid for decryption until their lifetime expires.
+Total decrypt lifetime is the sum of EncryptDecrypt + Decrypt lifetimes.
 
 __Key lifetimes__:
 
@@ -219,7 +221,8 @@ Linux enforces a per-process limit on how much memory can be locked, controlled
 by @RLIMIT_MEMLOCK@. On many systems, this defaults to just __64 KB__ (or even
 32 KB on some Debian versions). Since s2n-tls locks memory for all TLS
 connections and cryptographic operations, this limit can be exhausted quickly
-in applications handling multiple connections.
+in applications handling multiple connections.  Haskell garbage collection
+compounds the problem as finished connections are not immediately freed.
 
 When the limit is exceeded, you'll see errors like:
 
@@ -277,7 +280,7 @@ Tests may exhaust the default mlock limit. Use:
 
 The library distinguishes between:
 
-1. __Exceptions__ (t'S2nTls.Ffi.Types.S2nError') - Thrown for truly exceptional conditions:
+1. __Exceptions__ ('S2nError') - Thrown for truly exceptional conditions:
 
     * Internal library errors
     * Protocol violations
@@ -511,9 +514,9 @@ data S2nTls = S2nTls
     , releaseBuffers :: Connection -> IO ()
     -- ^ Release all buffers.
     , getErrorType :: S2nError -> IO S2nErrorType
-    -- ^ Query the error type classification for an t'S2nTls.Ffi.Types.S2nError'.
+    -- ^ Query the error type classification for an 'S2nError'.
     , getErrorMessage :: S2nError -> IO String
-    -- ^ Query the human-readable message for an t'S2nTls.Ffi.Types.S2nError'.
+    -- ^ Query the human-readable message for an 'S2nError'.
     }
 
 {- | Initialize the s2n-tls library and run an action with a high-level API.

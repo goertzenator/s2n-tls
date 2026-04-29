@@ -22,7 +22,6 @@ import S2nTls
 main :: IO ()
 main = withS2nTls Linked $ \tls -> do
     config <- tls.newConfig
-    tls.loadSystemCerts config
     tls.setCipherPreferences config "default_tls13"
 
     bracket (connectToServer "example.com" 443) close $ \sock -> do
